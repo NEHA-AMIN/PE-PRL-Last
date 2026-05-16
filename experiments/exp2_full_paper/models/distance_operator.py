@@ -40,47 +40,38 @@ class DistancePositionOperator(nn.Module):
         B, L, D = X.shape
         device = X.device
         
-        # 1. Compute SIGNED feature-space displacements: Δx_ij = X_i - X_j
-        # Expand dimensions for pairwise computation
-        X_i = X.unsqueeze(2)  # [B, L, 1, D]
-        X_j = X.unsqueeze(1)  # [B, 1, L, D]
-        delta_x = X_i - X_j   # [B, L, L, D] - SIGNED differences (preserves direction)
-        
-        # 2. Compute index-based distance decay: α(i,j) = 1 / (1 + |i-j|^a)
+        # 1. Compute index-based distance decay: α(i,j) = 1 / (1 + |i-j|^a)
         i_idx = torch.arange(L, device=device).unsqueeze(1)  # [L, 1]
         j_idx = torch.arange(L, device=device).unsqueeze(0)  # [1, L]
         index_dist = torch.abs(i_idx - j_idx).float()  # [L, L]
         alpha = 1.0 / (1.0 + index_dist ** self.decay_a)  # [L, L]
         
-        # 3. Compute feature-space distances d_ij
+        # 2. Compute feature-space distances d_ij
+        # Using torch.cdist avoids creating the [B, L, L, D] tensor
         if self.distance_type == 'l1':
-            # L1 distance: Σ_k |x_i,k - x_j,k|
-            d_ij = torch.abs(delta_x).sum(dim=-1)  # [B, L, L]
+            d_ij = torch.cdist(X, X, p=1.0)  # [B, L, L]
         elif self.distance_type == 'l2':
-            # L2 distance: sqrt(Σ_k (x_i,k - x_j,k)²)
-            d_ij = torch.sqrt((delta_x ** 2).sum(dim=-1) + 1e-8)  # [B, L, L]
+            d_ij = torch.cdist(X, X, p=2.0)  # [B, L, L]
         else:
             raise ValueError(f"Unknown distance_type: {self.distance_type}")
-        
-        # 4. Compute feature-space weighting: w_ij = 1 / (1 + d_ij)
+            
+        # 3. Compute feature-space weighting: w_ij = 1 / (1 + d_ij)
         w_ij = 1.0 / (1.0 + d_ij)  # [B, L, L]
         
-        # 5. Combine weights: α(i,j) · w_ij
-        # alpha: [L, L] -> broadcast to [B, L, L]
-        combined_weight = alpha.unsqueeze(0) * w_ij  # [B, L, L]
+        # 4. Combine weights: W_ij = α(i,j) · w_ij
+        W = alpha.unsqueeze(0) * w_ij  # [B, L, L]
         
-        # 6. Element-wise multiplication: (α(i,j) · w_ij) ⊙ Δx_ij
-        # combined_weight: [B, L, L] -> [B, L, L, 1] for broadcasting
-        # delta_x: [B, L, L, D]
-        weighted_delta = combined_weight.unsqueeze(-1) * delta_x  # [B, L, L, D]
+        # 5. Mask diagonal (j ≠ i)
+        mask = torch.eye(L, device=device).bool()
+        W = W.masked_fill(mask.unsqueeze(0), 0.0)  # [B, L, L]
         
-        # 7. Aggregate: O_i = Σ_j (α(i,j) · w_ij ⊙ Δx_ij)
-        # Exclude self (j ≠ i) by masking diagonal
-        mask = torch.eye(L, device=device).bool()  # [L, L]
-        mask = mask.unsqueeze(0).unsqueeze(-1)  # [1, L, L, 1]
-        weighted_delta = weighted_delta.masked_fill(mask, 0.0)
+        # 6. Aggregate: O_i = Σ_j W_ij · (X_i - X_j)
+        # Mathematically equivalent to: O_i = X_i · (Σ_j W_ij) - Σ_j (W_ij · X_j)
+        # This completely avoids allocating a [B, L, L, D] tensor!
+        W_sum = W.sum(dim=2, keepdim=True)  # [B, L, 1]
+        term1 = X * W_sum                   # [B, L, D]
+        term2 = torch.bmm(W, X)             # [B, L, D]
         
-        # Sum over j dimension
-        O = weighted_delta.sum(dim=2)  # [B, L, D]
+        O = term1 - term2  # [B, L, D]
         
         return O
