@@ -114,59 +114,70 @@ class DataEmbedding(nn.Module):
         return self.dropout(x)
 
 
-class DataEmbedding_ordering_sem(nn.Module):
+class DataEmbedding_ordering_pos(nn.Module):
     """
-    Experiment: ordering_new_sem_space
-    
+    Experiment: ordering_new_pos_space
+
     Formula:
-        X'_i = X_i + T_i + O_i^sem
+        X'_i = X_i + T_i + P_i + O_i^pos
 
     where:
-        delta_i^val  = 0                if i = 0
-                       X_i - X_{i-1}   if i >= 1
-        x_bar^val    = (1/N) * sum_i ||X_i||_2   (scalar per batch element)
-        O_i^sem      = delta_i^val / (x_bar^val + 1e-8)
+        delta_i^leg  = 0                if i = 0
+                       P_i - P_{i-1}   if i >= 1
+        p_bar^leg    = (1/N) * sum_i ||P_i||_2   (scalar, fixed per sequence length)
+        O_i^pos      = delta_i^leg / (p_bar^leg + 1e-8)
 
     Components included:
         value embedding    YES  (X_i)
         temporal embedding YES  (T_i)
-        ordering signal    YES  (O_i^sem, built in semantic space)
+        Legendre embedding YES  (P_i, added directly)
+        ordering signal    YES  (O_i^pos, built in positional space)
     Components excluded:
         sinusoidal PositionalEmbedding  NO
-        Legendre embedding              NO
 
     Properties:
-        - Scale-invariant: multiplying all X_i by alpha leaves O_i unchanged
-        - Translation-invariant: adding constant c to all X_i leaves delta unchanged
-        - Locally order-sensitive: permuting input changes O_i
-        - delta[:, 0, :] == 0  (zero-pad boundary condition)
+        - Content-independent: token identity never enters O_i^pos
+        - Scale-invariant: multiplying all P_i by alpha leaves O_i unchanged
+        - Translation-invariant: adding constant c to all P_i leaves delta unchanged
+        - Locally order-sensitive: permuting positions changes O_i
+        - delta_p[:, 0, :] == 0  (zero-pad boundary condition)
         - No learnable parameters beyond TokenEmbedding and temporal embedding
+          (LegendrePositionEmbedding is a non-trainable buffer)
     """
 
-    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1):
-        super(DataEmbedding_ordering_sem, self).__init__()
+    def __init__(self, c_in, d_model, embed_type='fixed', freq='h', dropout=0.1,
+                 max_len=5000):
+        super(DataEmbedding_ordering_pos, self).__init__()
 
         self.value_embedding = TokenEmbedding(c_in=c_in, d_model=d_model)
         self.temporal_embedding = (TemporalEmbedding(d_model=d_model, embed_type=embed_type, freq=freq)
                                    if embed_type != 'timeF'
                                    else TimeFeatureEmbedding(d_model=d_model, embed_type=embed_type, freq=freq))
+        # Import here to keep the same path convention used across all experiments
+        import os, sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        from legendre_embedding import LegendrePositionEmbedding
+        self.legendre_embedding = LegendrePositionEmbedding(d_model=d_model, max_len=max_len)
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x, x_mark):
         # ── standard components ───────────────────────────────────────────────
         val  = self.value_embedding(x)          # [B, L, D]   X_i
         temp = self.temporal_embedding(x_mark)  # [B, L, D]   T_i
+        leg  = self.legendre_embedding(x)       # [B, L, D]   P_i  (buffer, no grad)
 
-        # ── consecutive delta in semantic space ───────────────────────────────
-        delta = torch.zeros_like(val)                        # delta_0 = 0  [B, L, D]
-        delta[:, 1:, :] = val[:, 1:, :] - val[:, :-1, :]   # delta_i = X_i - X_{i-1}
+        # ── consecutive delta in positional space ─────────────────────────────
+        # Detach leg before slicing to be explicit: it is a fixed buffer, no grad needed
+        leg_d = leg.detach()
+        delta_p = torch.zeros_like(leg_d)                            # delta_0 = 0  [B, L, D]
+        delta_p[:, 1:, :] = leg_d[:, 1:, :] - leg_d[:, :-1, :]     # delta_i = P_i - P_{i-1}
 
-        # ── scalar normalization: mean of L2 norms over sequence ──────────────
-        # val.norm(dim=-1): [B, L]
+        # ── scalar normalization over positional norms ────────────────────────
+        # leg_d.norm(dim=-1): [B, L]
         # .mean(dim=1, keepdim=True): [B, 1]
         # .unsqueeze(-1): [B, 1, 1]
-        x_bar = val.norm(dim=-1).mean(dim=1, keepdim=True).unsqueeze(-1)  # [B, 1, 1]
+        p_bar = leg_d.norm(dim=-1).mean(dim=1, keepdim=True).unsqueeze(-1)  # [B, 1, 1]
 
-        ordering = delta / (x_bar + 1e-8)       # [B, L, D]   O_i^sem
+        ordering = delta_p / (p_bar + 1e-8)     # [B, L, D]   O_i^pos
 
-        return self.dropout(val + temp + ordering)           # [B, L, D]
+        return self.dropout(val + temp + leg + ordering)             # [B, L, D]

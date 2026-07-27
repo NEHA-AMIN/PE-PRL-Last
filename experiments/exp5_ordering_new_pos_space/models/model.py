@@ -6,7 +6,7 @@ from utils.masking import TriangularCausalMask, ProbMask
 from models.encoder import Encoder, EncoderLayer, ConvLayer, EncoderStack
 from models.decoder import Decoder, DecoderLayer
 from models.attn import FullAttention, ProbAttention, AttentionLayer
-from models.embed import DataEmbedding, DataEmbedding_ordering_sem
+from models.embed import DataEmbedding, DataEmbedding_ordering_pos
 
 
 class Informer(nn.Module):
@@ -25,12 +25,12 @@ class Informer(nn.Module):
         if pe_mode == 'vanilla':
             self.enc_embedding = DataEmbedding(enc_in, d_model, embed, freq, dropout)
             self.dec_embedding = DataEmbedding(dec_in, d_model, embed, freq, dropout)
-        elif pe_mode == 'ordering_sem':
-            self.enc_embedding = DataEmbedding_ordering_sem(enc_in, d_model, embed, freq, dropout)
-            self.dec_embedding = DataEmbedding_ordering_sem(dec_in, d_model, embed, freq, dropout)
+        elif pe_mode == 'ordering_pos':
+            self.enc_embedding = DataEmbedding_ordering_pos(enc_in, d_model, embed, freq, dropout)
+            self.dec_embedding = DataEmbedding_ordering_pos(dec_in, d_model, embed, freq, dropout)
         else:
             raise ValueError(f"Unknown pe_mode '{pe_mode}'. "
-                             f"Expected 'vanilla' or 'ordering_sem'.")
+                             f"Expected 'vanilla' or 'ordering_pos'.")
 
         # ── Attention ─────────────────────────────────────────────────────────
         Attn = ProbAttention if attn == 'prob' else FullAttention
@@ -107,12 +107,12 @@ class InformerStack(nn.Module):
         if pe_mode == 'vanilla':
             self.enc_embedding = DataEmbedding(enc_in, d_model, embed, freq, dropout)
             self.dec_embedding = DataEmbedding(dec_in, d_model, embed, freq, dropout)
-        elif pe_mode == 'ordering_sem':
-            self.enc_embedding = DataEmbedding_ordering_sem(enc_in, d_model, embed, freq, dropout)
-            self.dec_embedding = DataEmbedding_ordering_sem(dec_in, d_model, embed, freq, dropout)
+        elif pe_mode == 'ordering_pos':
+            self.enc_embedding = DataEmbedding_ordering_pos(enc_in, d_model, embed, freq, dropout)
+            self.dec_embedding = DataEmbedding_ordering_pos(dec_in, d_model, embed, freq, dropout)
         else:
             raise ValueError(f"Unknown pe_mode '{pe_mode}'. "
-                             f"Expected 'vanilla' or 'ordering_sem'.")
+                             f"Expected 'vanilla' or 'ordering_pos'.")
 
         # ── Attention ─────────────────────────────────────────────────────────
         Attn = ProbAttention if attn == 'prob' else FullAttention

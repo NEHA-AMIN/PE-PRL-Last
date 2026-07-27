@@ -59,6 +59,13 @@ parser.add_argument('--gpu', type=int, default=0, help='gpu')
 parser.add_argument('--use_multi_gpu', action='store_true', help='use multiple gpus', default=False)
 parser.add_argument('--devices', type=str, default='0,1,2,3',help='device ids of multile gpus')
 
+# Positional encoding mode — selects the embedding class used by Informer.__init__
+# 'vanilla'      : Zhou's original DataEmbedding (sinusoidal PE + temporal)
+# 'ordering_sem' : DataEmbedding_ordering_sem  (Exp4 revised — ordering in semantic space)
+# 'ordering_pos' : DataEmbedding_ordering_pos  (Exp5 revised — ordering in positional space)
+parser.add_argument('--pe_mode', type=str, default='vanilla',
+                    help='positional encoding mode: vanilla | ordering_sem | ordering_pos')
+
 args = parser.parse_args()
 
 args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False

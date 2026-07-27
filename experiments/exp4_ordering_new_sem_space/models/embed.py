@@ -151,6 +151,7 @@ class DataEmbedding_ordering_sem(nn.Module):
                                    if embed_type != 'timeF'
                                    else TimeFeatureEmbedding(d_model=d_model, embed_type=embed_type, freq=freq))
         self.dropout = nn.Dropout(p=dropout)
+        self._diag_step = 0   # diagnostic counter — prints first batch of each epoch only
 
     def forward(self, x, x_mark):
         # ── standard components ───────────────────────────────────────────────
@@ -168,5 +169,19 @@ class DataEmbedding_ordering_sem(nn.Module):
         x_bar = val.norm(dim=-1).mean(dim=1, keepdim=True).unsqueeze(-1)  # [B, 1, 1]
 
         ordering = delta / (x_bar + 1e-8)       # [B, L, D]   O_i^sem
+
+        # ── diagnostic: signal magnitude — first batch of each epoch only ────
+        if self.training and self._diag_step % 100 == 0:
+            with torch.no_grad():
+                delta_norm = delta.norm(dim=-1).mean().item()
+                xbar_val   = x_bar.mean().item()
+                order_norm = ordering.norm(dim=-1).mean().item()
+                val_norm   = val.norm(dim=-1).mean().item()
+                print(f"[SEM step={self._diag_step}] "
+                      f"delta_norm={delta_norm:.4f} | x_bar={xbar_val:.4f} | "
+                      f"order_norm={order_norm:.4f} | val_norm={val_norm:.4f} | "
+                      f"ratio={order_norm/val_norm:.4f}")
+        if self.training:
+            self._diag_step += 1
 
         return self.dropout(val + temp + ordering)           # [B, L, D]
