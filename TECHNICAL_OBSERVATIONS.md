@@ -446,3 +446,195 @@ V from delta (x_i - x_{i-1})    → Aggregation of temporal signal
 **Maintained by:** Research Team  
 **Purpose:** Document implementation details, design choices, and observations for paper writing and future work  
 **Status:** Living document - update as discoveries are made
+
+
+# Positional Space vs Semantic Space — A Complete Explanation
+
+## 1. Starting From Scratch: What Problem Does a Transformer Have?
+
+A transformer processes a sequence of tokens as a **set**, not a sequence. The self-attention operation:
+
+$$
+\mathrm{Attention}(Q,K,V)
+=
+\mathrm{softmax}\!\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+$$
+
+is **permutation-equivariant** — if you shuffle the input tokens, the output shuffles identically. It contains no built-in notion of "token 3 came before token 7." The model is blind to order.
+
+To fix this, every token's representation must be augmented with *some* signal that encodes its position. The question is: **what kind of information should that signal encode, and where does it come from?**
+
+This question is exactly the split between **positional space** and **semantic space** in this codebase.
+
+---
+
+## 2. What Is Semantic Space?
+
+**Semantic space** is the vector space spanned by $X_i$ — the **content** of the data at timestep $i$.
+
+In this codebase, $X_i$ is produced by `TokenEmbedding`:
+
+```python
+# Informer2020-original/models/embed.py — Lines 30–38
+self.tokenConv = nn.Conv1d(
+    in_channels=c_in,      # 7 raw ETTh1 features
+    out_channels=d_model,  # 512-dimensional output
+    kernel_size=3, padding=padding, padding_mode='circular'
+)
+
+def forward(self, x):
+    x = self.tokenConv(x.permute(0, 2, 1)).transpose(1, 2)
+    return x   # [B, L, 512]
+```
+
+The 7 raw input features at each timestep — oil temperature (OT), load, transformer readings — are projected from 7 dimensions into 512 dimensions using a 1D convolution with kernel size 3. This captures **local interactions between neighbouring raw features** to produce a rich 512-dimensional vector that represents the *meaning* or *content* of that timestep.
+
+The **key property of semantic space:** it is **input-dependent**. Every different batch of ETTh1 data produces different $X_i$ vectors. The 3am reading on a January morning has a completely different $X_i$ than the 3pm reading on a summer afternoon — because the actual physical measurements differ. Semantic space answers the question: **"What is happening at this timestep?"**
+
+Formally, semantic space is:
+
+$$
+X_{\mathrm{sem}}
+=
+\left\{
+X_i\in\mathbb{R}^{512}
+\mid
+X_i=f_\theta(\mathrm{raw\_data}[i-1:i+2])
+\right\}
+$$
+
+where $f_\theta$ is the Conv1D with learnable parameters $\theta$. It is **batch-dependent, data-dependent, and changes during training** as $\theta$ updates through backpropagation.
+
+---
+
+## 3. What Is Positional Space?
+
+**Positional space** is the vector space spanned by $P_i$ — the **location identity** of a timestep, independent of what data is observed there.
+
+In this codebase, $P_i$ is produced by `LegendrePositionEmbedding`:
+
+```python
+# experiments/exp2_full_paper/models/legendre_embedding.py — Lines 52–70
+positions = 2.0 * np.arange(seq_len) / (seq_len - 1) - 1.0  # [-1, 1]
+
+for k in range(d_model):          # k = 0, 1, 2, ..., 511
+    L_k = legendre(k)             # k-th Legendre polynomial
+    P[:, k] = L_k(positions)      # evaluate at all positions
+
+P = torch.FloatTensor(P) / math.sqrt(d_model)   # scale
+
+self.register_buffer('legendre_emb', P)         # NON-TRAINABLE, fixed forever
+```
+
+Position 0 always maps to $\hat{i}=-1$. Position 47 (the middle of a 96-step window) always maps to $\hat{i}=0$. Position 95 always maps to $\hat{i}=+1$. These never change — **regardless of what data sits at those positions, regardless of the training epoch, regardless of the batch.**
+
+The result is a fixed matrix
+
+$$
+P\in\mathbb{R}^{96\times512}
+$$
+
+where:
+
+- Row $i$ is the "address" of the $i$-th slot in the sequence
+- Each row is the evaluation of 512 Legendre polynomials at a single normalized position
+- No two rows are the same (each position has a unique fingerprint)
+
+The **key property of positional space:** it is **input-independent**. $P_i$ is purely a function of the index $i$, nothing else. Positional space answers the question: **"Where in the sequence is this slot?"**
+
+Formally:
+
+$$
+X_{\mathrm{pos}}
+=
+\left\{
+P_i\in\mathbb{R}^{512}
+\mid
+P_{i,k}
+=
+L_k\!\left(\frac{2i}{N-1}-1\right)\!/\sqrt{d}
+\right\}
+$$
+
+It is **batch-independent, data-independent, and never changes after construction.**
+
+---
+
+## 4. The Fundamental Difference: A Concrete Example
+
+Take ETTh1. Suppose at position $i=20$ in batch 1, the oil temperature is **35°C** (a hot summer reading), and at position $i=20$ in batch 2, the oil temperature is **8°C** (a cold winter reading).
+
+| | Semantic $X_{20}$ | Positional $P_{20}$ |
+|---|---|---|
+| **Batch 1 (35°C)** | `[0.83, -0.21, 0.44, ...]` (512-dim, depends on data) | $[L_0(-0.58),\ L_1(-0.58),\ \ldots]/\sqrt{512}$ |
+| **Batch 2 (8°C)** | `[-0.52, 0.61, -0.19, ...]` (completely different) | $[L_0(-0.58),\ L_1(-0.58),\ \ldots]/\sqrt{512}$ |
+| **Same?** | ❌ **No** — reflects the data | ✅ **Yes** — reflects the index |
+
+$X_{20}$ is different in every batch because the content changes. $P_{20}$ is identical in every batch because the position doesn't change. This is the entire distinction.
+
+The same logic applies to the sinusoidal PE in the baseline at `Informer2020-original/models/embed.py:113`:
+
+```python
+x = self.value_embedding(x) + self.position_embedding(x) + self.temporal_embedding(x_mark)
+# ─── semantic ───────────  ─── positional ───────────  ─── temporal (also positional) ───
+```
+
+`position_embedding(x)` uses `x` only to read `x.size(1)` (the sequence length) — it never looks at the actual values of `x`. It's positional space by design.
+
+## 7. Why Separation Matters for the Model
+
+The transformer's embedding layer must answer **two distinct questions** for every token:
+
+1. **What are you?** (semantic content → helps attention know which values are relevant)
+2. **Where are you?** (positional address → helps attention know the ordering)
+
+The final embedding at `exp2_full_paper/models/embed.py:159` is:
+
+```python
+x = value_emb + temporal_emb + legendre_pos + distance_pos
+#     ── WHAT ──   ── WHEN ────   ── WHERE ── + ── WHERE (relative) ──
+```
+
+When the ordering operator is applied in **positional space** ($P_i$), the resulting ordering signal $O_i$ is **purely positional**. It tells the attention mechanism **how far from the sequence center this position lies** (in the Legendre polynomial space). The signal is therefore orthogonal to the semantic (**WHAT**) representation.
+
+By contrast, if the ordering operator is applied in **semantic space** ($X_i$), the resulting $O_i$ becomes a **mixed WHAT + WHERE signal**. Instead of encoding only position, it represents something like:
+
+> "How different is this token's meaning from the average meaning?"
+
+This entangles semantic content with positional information, which introduces several scientific problems.
+
+### 1. Gradient Interference
+
+During backpropagation, the parameters of the `TokenEmbedding` layer receive gradients from multiple paths simultaneously:
+
+- the direct semantic embedding path ($X_i$),
+- the ordering path ($O_i$, computed from $X_i$),
+- and the task loss.
+
+Because these objectives are coupled, the gradients can conflict with one another, making optimization more difficult.
+
+### 2. Non-Stationarity
+
+When ordering is computed from semantic embeddings, the ordering signal changes throughout training because $X_i$ changes whenever the embedding parameters $\theta$ are updated.
+
+A positional embedding ($P_i$), however, is **stationary**—it is fixed from the first epoch onward. The model always observes the same positional codes, providing a stable optimization target and more consistent gradients.
+
+### 3. Content Confounding
+
+In Experiment 4 (semantic ordering), consider a region of the ETTh1 dataset where all measurements are nearly identical (a flat segment).
+
+In that case,
+
+$$
+X_i - X_j \approx 0
+$$
+
+for most neighboring positions, which implies
+
+$$
+O_i \approx 0.
+$$
+
+The ordering signal effectively disappears for the entire segment, even though the sequence positions themselves remain perfectly well-defined.
+
+Thus, the model temporarily loses its positional information simply because the input values happen to be similar—a behavior that should never occur in a true positional encoding.
