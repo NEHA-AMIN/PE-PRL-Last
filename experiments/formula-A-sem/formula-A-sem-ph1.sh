@@ -1,27 +1,35 @@
 #!/bin/bash
 # =============================================================================
-# Experiment 5 revised: Phase 1 — Ordering in Positional Space
+# Formula A (Semantic Space) — Phase 1: Consecutive Delta Ordering
 #
-# Name: ordering_new_pos_space
-# Class: DataEmbedding_ordering_pos
+# Experiment name : formula-A-sem
+# Embedding class : DataEmbedding_delta_pos
+# pe_mode flag    : --pe_mode delta_pos
 #
-# Formula:
-#   X'_i = X_i + T_i + P_i + O_i^pos
-#   O_i^pos = delta_i^leg / (p_bar^leg + 1e-8)
-#   delta_i^leg = P_i - P_{i-1}  (delta_0 = 0)
-#   p_bar^leg   = (1/N) sum_i ||P_i||_2
+# Formula
+# -------
+#   Baseline:  X'_i = X_i + PE_i + T_i
+#   Formula A: X'_i = X_i + Δ(X_i) + T_i
 #
-# Components: value YES, temporal YES, Legendre YES, sinusoidal PE NO
+#   where:
+#     Δ(X_i) = X_i − X_{i−1}   for i ≥ 1
+#     Δ(X_0) = X_0 − 0         for i = 0  (zero-pad boundary)
+#     X_i    = TokenEmbedding(x)  [B, L, d_model]
 #
-# pe_mode flag passed to model: --pe_mode ordering_pos
+# What changed from baseline
+# --------------------------
+#   REMOVED : sinusoidal PositionalEmbedding (PE_i)
+#   ADDED   : consecutive delta Δ(X_i) in the positional slot
+#   UNCHANGED: TokenEmbedding, TemporalEmbedding, Encoder, Decoder,
+#              Attention, projection head, all hyperparameters
 #
-# CRITICAL extra file: embed.py imports LegendrePositionEmbedding from
-# legendre_embedding.py at runtime. legendre_embedding.py MUST be copied.
+# Extra files needed: none — embed.py is self-contained (no legendre helper)
 #
-# Phase 1 goal:
-#   Does a content-independent, locally order-sensitive signal built from
-#   Legendre positional transitions provide sequential structure?
-#   Sweep pred_len {96, 192} at seed 2021.
+# Phase 1 goal
+# ------------
+#   seed=2021, pred_len ∈ {96, 192}.
+#   Establish whether consecutive-delta ordering in semantic space can match
+#   or exceed Exp1-Pre (alpha=1.0) on ETTh1 multi-variate.
 #
 # Total runs: 2
 # =============================================================================
@@ -29,8 +37,8 @@
 # --- PATHS ---
 PROJECT_ROOT="/content/drive/MyDrive/Dist-Abl-PRL-All-Exs-ETTH1"
 INFORMER_DIR="$PROJECT_ROOT/Informer2020-original"
-EXP_DIR="$PROJECT_ROOT/experiments/exp5_ordering_new_pos_space"
-LOG_DIR="$PROJECT_ROOT/logs/exp5_ordering_new_pos_space_phase1"
+EXP_DIR="$PROJECT_ROOT/experiments/formula-A-sem"
+LOG_DIR="$PROJECT_ROOT/logs/formula-A-sem-phase1"
 RESULTS_DIR="$PROJECT_ROOT/results"
 mkdir -p "$LOG_DIR"
 MASTER_LOG="$LOG_DIR/master_run.log"
@@ -38,14 +46,16 @@ MASTER_LOG="$LOG_DIR/master_run.log"
 # --- HEADER ---
 {
 echo "============================================================"
-echo " Experiment 5 revised — Phase 1: Ordering in Positional Space"
+echo " Formula A (Semantic Space) — Phase 1: Consecutive Delta Ordering"
 echo " Date: $(date)"
 echo "------------------------------------------------------------"
-echo " Formula:  X'_i = X_i + T_i + P_i + O_i^pos"
-echo " Signal:   O_i^pos = (P_i - P_{i-1}) / p_bar^leg"
-echo " pe_mode:  ordering_pos"
+echo " Formula:   X'_i = X_i + Delta(X_i) + T_i"
+echo " Signal:    Delta(X_i) = X_i - X_{i-1}  (zero-pad at i=0)"
+echo " pe_mode:   delta_pos"
+echo " Replaces:  sinusoidal PE"
 echo "------------------------------------------------------------"
-echo " Sweep:    pred_len in {96, 192}   seed=2021"
+echo " Seed:       2021"
+echo " Pred lens:  96, 192"
 echo " Total runs: 2"
 echo "============================================================"
 } | tee "$MASTER_LOG"
@@ -54,16 +64,12 @@ echo "============================================================"
 echo "" | tee -a "$MASTER_LOG"
 echo "Copying model files to $INFORMER_DIR/models/ ..." | tee -a "$MASTER_LOG"
 
-cp "$EXP_DIR/models/__init__.py"            "$INFORMER_DIR/models/__init__.py"
-cp "$EXP_DIR/models/attn.py"               "$INFORMER_DIR/models/attn.py"
-cp "$EXP_DIR/models/embed.py"              "$INFORMER_DIR/models/embed.py"
-cp "$EXP_DIR/models/encoder.py"            "$INFORMER_DIR/models/encoder.py"
-cp "$EXP_DIR/models/decoder.py"            "$INFORMER_DIR/models/decoder.py"
-cp "$EXP_DIR/models/model.py"              "$INFORMER_DIR/models/model.py"
-
-# CRITICAL: embed.py imports LegendrePositionEmbedding at __init__ time.
-# Without this file the import will fail.
-cp "$EXP_DIR/models/legendre_embedding.py" "$INFORMER_DIR/models/legendre_embedding.py"
+cp "$EXP_DIR/models/__init__.py" "$INFORMER_DIR/models/__init__.py"
+cp "$EXP_DIR/models/attn.py"    "$INFORMER_DIR/models/attn.py"
+cp "$EXP_DIR/models/embed.py"   "$INFORMER_DIR/models/embed.py"
+cp "$EXP_DIR/models/encoder.py" "$INFORMER_DIR/models/encoder.py"
+cp "$EXP_DIR/models/decoder.py" "$INFORMER_DIR/models/decoder.py"
+cp "$EXP_DIR/models/model.py"   "$INFORMER_DIR/models/model.py"
 
 echo "File copy complete." | tee -a "$MASTER_LOG"
 echo "" | tee -a "$MASTER_LOG"
@@ -79,7 +85,7 @@ SEED=2021
 for pred_len in 96 192; do
 
     TOTAL=$((TOTAL + 1))
-    RUN_ID="exp5_ord_pos_ph1_ETTh1_pred${pred_len}_seed${SEED}"
+    RUN_ID="formula_a_sem_ph1_ETTh1_pred${pred_len}_seed${SEED}"
     RUN_LOG="$LOG_DIR/${RUN_ID}.log"
     mkdir -p "$RESULTS_DIR/${RUN_ID}"
 
@@ -124,7 +130,7 @@ for pred_len in 96 192; do
         --learning_rate 0.0001 \
         --batch_size 32 \
         --itr 1 \
-        --pe_mode ordering_pos \
+        --pe_mode delta_pos \
         --des "$RUN_ID" \
         2>&1 | tee "$RUN_LOG"; then
 
@@ -143,7 +149,7 @@ done
 
 # --- SUMMARY ---
 echo "============================================================" | tee -a "$MASTER_LOG"
-echo " PHASE 1 SUMMARY — Exp5 Ordering Positional Space"          | tee -a "$MASTER_LOG"
+echo " PHASE 1 SUMMARY — Formula A (Semantic Space)"              | tee -a "$MASTER_LOG"
 echo " Total: $TOTAL | Completed: $COMPLETED | Failed: $FAILED | Skipped: $SKIPPED" | tee -a "$MASTER_LOG"
 echo "------------------------------------------------------------" | tee -a "$MASTER_LOG"
 
@@ -151,7 +157,7 @@ printf " %-55s %10s %10s\n" "RUN_ID" "MSE" "MAE" | tee -a "$MASTER_LOG"
 printf " %-55s %10s %10s\n" "-------------------------------------------------------" "----------" "----------" | tee -a "$MASTER_LOG"
 
 for pred_len in 96 192; do
-    RUN_ID="exp5_ord_pos_ph1_ETTh1_pred${pred_len}_seed${SEED}"
+    RUN_ID="formula_a_sem_ph1_ETTh1_pred${pred_len}_seed${SEED}"
     RUN_LOG="$LOG_DIR/${RUN_ID}.log"
 
     if [ -f "$RUN_LOG" ]; then
@@ -166,4 +172,15 @@ for pred_len in 96 192; do
     printf " %-55s %10s %10s\n" "$RUN_ID" "$MSE" "$MAE" | tee -a "$MASTER_LOG"
 done
 
+echo "" | tee -a "$MASTER_LOG"
+echo "------------------------------------------------------------" | tee -a "$MASTER_LOG"
+echo " REFERENCE — Exp1-Pre alpha=1.0 (seed=2021):"               | tee -a "$MASTER_LOG"
+echo "   pred=96  MSE=0.8683"                                      | tee -a "$MASTER_LOG"
+echo "   pred=192 MSE=0.8463  ← target to beat"                   | tee -a "$MASTER_LOG"
+echo "" | tee -a "$MASTER_LOG"
+echo " DECISION GUIDE:"                                             | tee -a "$MASTER_LOG"
+echo "   Formula-A-sem wins BOTH vs Exp1-Pre → proceed to Phase 2" | tee -a "$MASTER_LOG"
+echo "   Formula-A-sem wins ONE  vs Exp1-Pre → Phase 2 to confirm" | tee -a "$MASTER_LOG"
+echo "   Formula-A-sem loses BOTH            → document, stop"     | tee -a "$MASTER_LOG"
 echo "============================================================" | tee -a "$MASTER_LOG"
+echo "End: $(date)" | tee -a "$MASTER_LOG"
