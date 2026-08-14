@@ -1,7 +1,0 @@
-Args in experiment:
-Namespace(model='informer', data='ETTh1', root_path='./data/ETT/', data_path='ETTh1.csv', features='M', target='OT', freq='h', checkpoints='./checkpoints/', seq_len=96, label_len=48, pred_len=48, enc_in=7, dec_in=7, c_out=7, d_model=512, n_heads=8, e_layers=2, d_layers=1, s_layers=[3, 2, 1], d_ff=2048, factor=5, padding=0, distil=True, dropout=0.05, attn='full', embed='timeF', activation='gelu', output_attention=False, do_predict=False, mix=True, cols=None, num_workers=0, itr=1, train_epochs=6, batch_size=32, patience=3, learning_rate=0.0001, des='Exp3b_Label_Temporal_48', loss='mse', lradj='type1', use_amp=False, inverse=False, use_gpu=False, gpu=0, use_multi_gpu=False, devices='0,1,2,3', seed=2021, decay_a=1.0, detail_freq='h')
-Use CPU
->>>>>>>start training : informer_ETTh1_ftM_sl96_ll48_pl48_dm512_nh8_el2_dl1_df2048_atfull_fc5_ebtimeF_dtTrue_mxTrue_Exp3b_Label_Temporal_48_0>>>>>>>>>>>>>>>>>>>>>>>>>>
-train 8497
-val 2833
-test 2833
