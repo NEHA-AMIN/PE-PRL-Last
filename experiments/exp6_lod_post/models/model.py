@@ -90,11 +90,11 @@ class Informer(nn.Module):
 
 
 class InformerStack(nn.Module):
-    def __init__(self, enc_in, dec_in, c_out, seq_len, label_len, out_len, 
-                factor=5, d_model=512, n_heads=8, e_layers=[3,2,1], d_layers=2, d_ff=512, 
+    def __init__(self, enc_in, dec_in, c_out, seq_len, label_len, out_len,
+                factor=5, d_model=512, n_heads=8, e_layers=[3,2,1], d_layers=2, d_ff=512,
                 dropout=0.0, attn='prob', embed='fixed', freq='h', activation='gelu',
                 output_attention = False, distil=True, mix=True,
-                device=torch.device('cuda:0')):
+                device=torch.device('cuda:0'), decay_a=1.0):
         super(InformerStack, self).__init__()
         self.pred_len = out_len
         self.attn = attn
@@ -112,7 +112,8 @@ class InformerStack(nn.Module):
             Encoder(
                 [
                     EncoderLayer(
-                        AttentionLayer(Attn(False, factor, attention_dropout=dropout, output_attention=output_attention), 
+                        AttentionLayer(Attn(False, factor, attention_dropout=dropout, output_attention=output_attention,
+                                           decay_a=decay_a),
                                     d_model, n_heads, mix=False),
                         d_model,
                         d_ff,
@@ -132,9 +133,10 @@ class InformerStack(nn.Module):
         self.decoder = Decoder(
             [
                 DecoderLayer(
-                    AttentionLayer(Attn(True, factor, attention_dropout=dropout, output_attention=False), 
+                    AttentionLayer(Attn(True, factor, attention_dropout=dropout, output_attention=False),
                                 d_model, n_heads, mix=mix),
-                    AttentionLayer(FullAttention(False, factor, attention_dropout=dropout, output_attention=False), 
+                    AttentionLayer(FullAttention(False, factor, attention_dropout=dropout, output_attention=False,
+                                                 decay_a=decay_a),
                                 d_model, n_heads, mix=False),
                     d_model,
                     d_ff,

@@ -175,11 +175,6 @@ Linear projection → MSE/MAE
 
 ## 9. Consistency Checks
 
-### 9.1 Naming
-- ✅ Experiment folder: `exp1_distance_pre_softmax_decay`
-- ⚠️ Results folder: `exp1_distance_decay` (missing "pre_softmax" qualifier — ambiguous)
-- ✅ mse_mae_scores_sorted.txt: "Exp1-Pre" (clear)
-
 ### 9.2 Formula
 - ✅ `α(i,j) = 1/(1+|i-j|^a)` matches code exactly
 - ✅ Pre-softmax application confirmed from code
@@ -212,7 +207,6 @@ Linear projection → MSE/MAE
 2. **README pred_len wrong**: README-E1.md states `Prediction Length: 24` as the configuration; actual runs use 48/96/192/336.
 
 ### Moderate Issues
-3. **Results directory name mismatch**: `results/exp1_distance_decay/` missing the "pre" qualifier — creates confusion with Exp1-Post results folder.
 4. **Decoder distance decay undocumented**: Distance decay is active in decoder cross-attention (model.py lines 50-52); this is not mentioned in any documentation.
 5. **Dead code**: `PositionalEmbedding` object instantiated but never used in `forward()`.
 

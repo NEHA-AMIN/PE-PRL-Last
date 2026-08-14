@@ -70,6 +70,8 @@ class Encoder(nn.Module):
                 # Pass delta_x through all encoder layers
                 x, attn = attn_layer(x, attn_mask=attn_mask, delta_x=delta_x)
                 x = conv_layer(x)
+                if delta_x is not None:
+                    delta_x = conv_layer(delta_x)
                 attns.append(attn)
             x, attn = self.attn_layers[-1](x, attn_mask=attn_mask, delta_x=delta_x)
             attns.append(attn)

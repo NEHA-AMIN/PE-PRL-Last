@@ -207,7 +207,81 @@ Phase 2, pred=96, seed=2021: BOTH show MSE=0.7908, MAE=0.6579
 
 ---
 
-## VI. SUMMARY TABLE
+## VI. NEW FINDINGS — Formula Experiments & Exp3b (Experiments 8–12)
+
+### 🟡 IC-024 — Formula-A-sem Class/Flag Named `_pos` but Operates in Semantic Space
+**Files:** `experiments/formula-A-sem/models/embed.py`, `experiments/formula-A-sem/models/model.py`, `experiments/formula-A-sem/README.md`
+**Evidence:**
+- Folder: `formula-A-sem` (correct)
+- Class: `DataEmbedding_delta_pos` (says positional)
+- pe_mode: `delta_pos` (says positional)
+- README title: "Experiment 4c — Delta Ordering in **Positional** Space" (says positional)
+- Actual operation: delta computed on `TokenEmbedding` output (semantic space)
+
+**Impact:** Every identifier except the folder name misidentifies the space of operation. Anyone searching for "semantic" experiments would miss this one; anyone relying on the class name for understanding the implementation would be misled.
+
+---
+
+### 🟡 IC-025 — Formula-A-sem README References Nonexistent Folder and Script
+**File:** `experiments/formula-A-sem/README.md` (lines 353–354)
+**Evidence:** README says "Folder: `experiments/exp4c_delta_ordering_pos_space/`" and run command `bash experiments/exp4c_delta_ordering_pos_space/exp4c_delta_ordering_pos_space_ph1.sh`. Neither path exists.
+**Impact:** README is disconnected from actual file locations.
+
+---
+
+### 🟡 IC-026 — Formula-A-pos README References Nonexistent Folder
+**File:** `experiments/Formula-A-pos/README.md` (line 2)
+**Evidence:** README states "Folder: `experiments/exp5_ordering_new_pos_space/`". Actual folder is `experiments/Formula-A-pos/`. The `exp5_ordering_new_pos_space` directory does not exist.
+**Impact:** Cross-reference in README is broken.
+
+---
+
+### 🔴 IC-027 — Exp3b Has No Run Script
+**File:** `experiments/E-96-3b-Label-Temporal-Controlled/README.md` (line 167)
+**Evidence:** README references `bash experiments/E-96-3b-Label-Temporal-Controlled/run_exp3b.sh`. This file does not exist in the folder.
+**Impact:** The experiment cannot be launched. Exp3b has no execution path.
+
+---
+
+### 🟡 IC-028 — Exp3b Folder Name Does Not Match Naming Convention
+**Evidence:** All other experiments use names like `exp3_label_only`, `exp5b_label_order_clean_delta_MV`. Exp3b uses `E-96-3b-Label-Temporal-Controlled` with a capital prefix and hyphenated format.
+**Impact:** Inconsistent naming makes automated discovery or scripted batch processing harder.
+
+---
+
+### 🟡 IC-029 — Formula-B-sem Notebook Has Typo in Filename
+**File:** `experiments/Formula-B-sem/Order_Forumla_B_sem.ipynb`
+**Evidence:** "Forumla" should be "Formula". This is a Colab-style artifact (renamed copy).
+**Impact:** Minor; cosmetic only.
+
+---
+
+### 🟢 IC-030 — Formula-B-pos Notebook Has Colab Copy Suffix in Filename
+**File:** `experiments/Formula-B-pos/Order_formula_b_pos (1).ipynb`
+**Evidence:** The "(1)" suffix indicates a Google Colab duplicate/copy. Suggests the original may have been overwritten with a copy.
+**Impact:** Minor; cosmetic only.
+
+---
+
+### 🟡 IC-031 — All Four Formula Experiments Reference Exp1-Pre as Threshold (MSE=0.8683)
+**Files:** All four `*-ph1.sh` scripts
+**Evidence:** All scripts embed: `pred=96 MSE=0.8683` and `pred=192 MSE=0.8463 ← target to beat`. These values come from `mse_mae_scores_sorted.txt` Phase 1 data.
+**Impact:** The "target to beat" is a Phase 1 single-seed run, not a Phase 2 multi-seed average. Using a Phase 1 value as the comparison threshold for new experiments is statistically weak. However, it is at least internally consistent.
+
+---
+
+### 🟡 IC-032 — exp4_ordering_archive and formula-A-sem Differ in Normalisation and Boundary Condition
+**Files:** `Archived_experiments/exp4_ordering_archive/models/embed.py`, `experiments/formula-A-sem/models/embed.py`
+**Evidence:**
+- `exp4_ordering_archive`: normalises by `x_bar`; boundary `delta[:, 0, :] = 0`
+- `formula-A-sem`: does NOT normalise; boundary `delta[:, 0, :] = val[:, 0, :]`
+
+Both are described as "consecutive delta ordering in semantic space" but they are materially different. Results from one cannot be attributed to the other.
+**Impact:** If results from the archived version are quoted alongside formula-A-sem results, they would be subtly incomparable.
+
+---
+
+## VII. SUMMARY TABLE (COMPLETE)
 
 | ID | Severity | Category | Short Description |
 |----|----------|----------|-------------------|
@@ -234,5 +308,14 @@ Phase 2, pred=96, seed=2021: BOTH show MSE=0.7908, MAE=0.6579
 | IC-021 | 🟢 Minor | Implementation | require_grad typo (harmless) |
 | IC-022 | 🟡 Moderate | Implementation | Cross-attention decay semantically undefined |
 | IC-023 | 🟡 Moderate | Results | Multiple experiments missing Phase 2 |
+| IC-024 | 🟡 Moderate | Naming | formula-A-sem class/flag says _pos; operates in semantic space |
+| IC-025 | 🟡 Moderate | Documentation | formula-A-sem README references nonexistent folder |
+| IC-026 | 🟡 Moderate | Documentation | Formula-A-pos README references nonexistent folder |
+| IC-027 | 🔴 Critical | Scripts | Exp3b has no run script (run_exp3b.sh missing) |
+| IC-028 | 🟡 Moderate | Naming | Exp3b folder name violates repository naming convention |
+| IC-029 | 🟢 Minor | Naming | Formula-B-sem notebook filename typo |
+| IC-030 | 🟢 Minor | Naming | Formula-B-pos notebook Colab copy suffix |
+| IC-031 | 🟡 Moderate | Methodology | Formula experiments compare against Phase 1 single-seed threshold |
+| IC-032 | 🟡 Moderate | Implementation | exp4_ordering_archive and formula-A-sem differ in normalisation and boundary |
 
-**Total: 8 Critical, 11 Moderate, 4 Minor**
+**Total: 9 Critical, 16 Moderate, 6 Minor**
