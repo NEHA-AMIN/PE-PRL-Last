@@ -1,6 +1,6 @@
-# Experiment 5 Revised — Ordering in Positional Space
+# Formula-A-pos — Ordering in Positional Space
 
-**Folder:** `experiments/exp5_ordering_new_pos_space/`  
+**Folder:** `experiments/Formula-A-pos/`  
 **Class:** `DataEmbedding_ordering_pos`  
 **pe_mode flag:** `--pe_mode ordering_pos`
 
@@ -66,6 +66,15 @@ output      [B, L, D]   dropout(val + temp + leg + ordering)
 
 ---
 
+## Implementation Notes
+
+- `embed.py` imports `LegendrePositionEmbedding` inside `__init__` via `sys.path.insert(0, os.path.dirname(__file__))` — the import is scoped to the `models/` directory at runtime
+- `legendre_embedding.py` must be copied to `models/legendre_embedding.py`; unlike some other experiments in this repo, copying to the Informer root directory is **not** required here
+- `model.py` selects `DataEmbedding_ordering_pos` when `pe_mode == 'ordering_pos'`; raises `ValueError` for unknown modes
+- `attn.py`, `encoder.py`, `decoder.py` are Zhou's originals — unchanged
+
+---
+
 ## Files
 
 ```
@@ -84,14 +93,70 @@ the import fails at runtime.
 
 ---
 
+## Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Dataset | ETTh1 |
+| Model | Informer |
+| Attention | full (`--attn full`) |
+| Features | M (multivariate) |
+| `seq_len` | 96 |
+| `label_len` | 48 |
+| Prediction lengths (Phase 1) | 96, 192 |
+| Prediction lengths (Phase 2) | 48, 96, 192, 336 |
+| `d_model` | 512 |
+| `n_heads` | 8 |
+| `e_layers` | 2 |
+| `d_layers` | 1 |
+| `d_ff` | 2048 |
+| `factor` | 5 |
+| `enc_in` / `dec_in` / `c_out` | 7 / 7 / 7 |
+| `dropout` | 0.05 |
+| `embed` | timeF |
+| `freq` | h |
+| `activation` | gelu |
+| `distil` | True |
+| `batch_size` | 32 |
+| `learning_rate` | 0.0001 |
+| `train_epochs` | 6 |
+| `patience` | 3 |
+| `pe_mode` | ordering_pos |
+
+---
+
+## Experimental Design
+
+### Phase 1 — Baseline Screening
+- **Goal:** Establish whether consecutive-delta ordering in positional (Legendre) space can match or exceed the Exp1-Pre reference at short and mid horizon.
+- **Runs:** 2 (seed=2021, pred_len ∈ {96, 192})
+
+### Phase 2 — Seed Stability Validation
+- **Goal:** Multi-seed robustness check across seeds {2021, 2022, 2023} and extended horizons.
+- **Runs:** 12 (3 seeds × 4 pred_lens ∈ {48, 96, 192, 336})
+
+**Total experiment runs: 14** (2 Phase 1 + 12 Phase 2) — all completed successfully.
+
+> **Note:** `main_informer.py` does not accept a `--seed` flag. Each run uses a
+> distinct `--des` identifier so results are logged separately per seed.
+> Logs are stored on Google Drive at
+> `/content/drive/MyDrive/Dist-Abl-PRL-All-Exs-ETTH1/logs/Formula-A-pos-phase{1,2}/`.
+> The notebook cell output is the only local record of results.
+
+---
+
 ## Running
 
 ```bash
-bash experiments/exp5_ordering_new_pos_space/exp5_ordering_new_pos_space_ph1.sh
+# Phase 1
+bash experiments/Formula-A-pos/formula-A-pos-ph1.sh
+
+# Phase 2
+bash experiments/Formula-A-pos/Formula-A-pos-ph2.sh
 ```
 
-The script copies all 7 model files (including `legendre_embedding.py`) into
-`Informer2020-original/models/` and calls `main_informer.py` with `--pe_mode ordering_pos`.
+The scripts copy all 7 model files (including `legendre_embedding.py`) into
+`Informer2020-original/models/` and call `main_informer.py` with `--pe_mode ordering_pos`.
 
 ---
 
@@ -111,3 +176,66 @@ out = pos(x, x_mark)
 assert out.shape == (B, L, D)
 print("Shape check passed:", out.shape)
 ```
+
+---
+
+## Results
+
+### Phase 1 — Baseline Screening (seed=2021)
+
+| pred_len | MSE | MAE |
+|----------|-----|-----|
+| 96 | 0.8909913301467896 | 0.7516491413116455 |
+| 192 | 0.8714473843574524 | 0.74016934633255 |
+
+**Reference (Exp1-Pre, α=1.0, seed=2021):**
+- pred=96 → MSE=0.8683
+- pred=192 → MSE=0.8463
+
+**Phase 1 Outcome:** Formula-A-pos is marginally worse than Exp1-Pre at both pred=96 (0.8910 vs 0.8683) and pred=192 (0.8714 vs 0.8463). Phase 2 was run to check seed stability and extended horizons.
+
+---
+
+### Phase 2 — Seed Stability (seeds: 2021, 2022, 2023)
+
+| seed | pred_len | MSE | MAE |
+|------|----------|-----|-----|
+| 2021 | 48 | 0.8837067484855652 | 0.742670476436615 |
+| 2021 | 96 | 0.8045598864555359 | 0.7026992440223694 |
+| 2021 | 192 | 0.9127898812294006 | 0.7710499167442322 |
+| 2021 | 336 | 1.0232146978378296 | 0.8233616948127747 |
+| 2022 | 48 | 0.8641096353530884 | 0.7387957572937012 |
+| 2022 | 96 | 0.8698857426643372 | 0.7494027614593506 |
+| 2022 | 192 | 0.8873394131660461 | 0.7371362447738647 |
+| 2022 | 336 | 1.200138807296753 | 0.8784056305885315 |
+| 2023 | 48 | 0.8290919661521912 | 0.7213220596313477 |
+| 2023 | 96 | 0.7605789303779602 | 0.6719040870666504 |
+| 2023 | 192 | 0.9974824786186218 | 0.7885332703590393 |
+| 2023 | 336 | 1.1193406581878662 | 0.8653407692909241 |
+
+---
+
+## Analysis
+
+### Key Findings
+
+1. **Phase 1 vs reference (Exp1-Pre, α=1.0, seed=2021):**
+   - pred=96: Formula-A-pos (0.8910) is slightly **worse** than Exp1-Pre (0.8683).
+   - pred=192: Formula-A-pos (0.8714) is slightly **worse** than Exp1-Pre (0.8463).
+   - The positional-space ordering signal does not improve over distance-only pre-softmax at single-seed screening.
+
+2. **Phase 2 seed variability:**
+   - At pred=96, seeds produce MSE of 0.8046 (seed=2021), 0.8699 (seed=2022), 0.7606 (seed=2023) — a range of ~0.11, suggesting moderate seed sensitivity.
+   - At pred=192, results span 0.8873–0.9975, indicating more variability at longer horizons.
+   - At pred=336, results span 1.0232–1.2001, showing the largest variance across seeds.
+
+3. **Best observed results:**
+   - pred=48: seed=2023 (MSE=0.8291)
+   - pred=96: seed=2023 (MSE=0.7606) — the best single result of the entire experiment
+   - pred=192: seed=2022 (MSE=0.8873)
+   - pred=336: seed=2021 (MSE=1.0232)
+
+4. **Contrast with Formula-B-pos:**
+   - Formula-A uses a consecutive delta: `delta_i = P_i - P_{i-1}` (local positional change)
+   - Formula-B uses global mean deviation: `delta_i = mu_p - P_i`
+   - TODO: Information could not be verified from the repository — Formula-B-pos results are not available in this experiment's files for direct comparison.

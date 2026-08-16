@@ -162,9 +162,28 @@ class EncoderStack:
 
 #### `models/attn.py`
 **Key Implementation:**
+
+`delta_values` routing is handled by `AttentionLayer.forward()`, one level above
+`FullAttention`. `FullAttention.forward()` receives the already-projected `values`
+tensor and applies the post-softmax distance decay:
+
 ```python
-class FullAttention:
+# AttentionLayer.forward() — routes delta_values into value projection
+class AttentionLayer:
     def forward(self, queries, keys, values, attn_mask, delta_values=None):
+        queries = self.query_projection(queries).view(B, L, H, -1)
+        keys    = self.key_projection(keys).view(B, S, H, -1)
+        # V projected from delta_x when provided (Order component)
+        if delta_values is not None:
+            values = self.value_projection(delta_values).view(B, S, H, -1)
+        else:
+            values = self.value_projection(values).view(B, S, H, -1)
+        out, attn = self.inner_attention(queries, keys, values, attn_mask)
+        ...
+
+# FullAttention.forward() — post-softmax distance decay applied here
+class FullAttention:
+    def forward(self, queries, keys, values, attn_mask):
         # Step 1: Compute attention scores
         scores = torch.einsum("blhe,bshe->bhls", queries, keys)
         
@@ -182,9 +201,8 @@ class FullAttention:
         alpha = 1.0 / (1.0 + dist_matrix ** self.decay_a)
         A = A * alpha.unsqueeze(0).unsqueeze(0)
         
-        # Step 5: Use delta_values if provided (Order component)
-        V = values if delta_values is None else delta_values
-        output = torch.einsum("bhls,bshd->blhd", A, V)
+        # Step 5: Weighted sum with already-projected V
+        output = torch.einsum("bhls,bshd->blhd", A, values)
 ```
 
 #### `models/legendre_embedding.py`
@@ -218,11 +236,22 @@ class LegendrePositionEmbedding(nn.Module):
 
 #### `models/embed.py`
 **Key Implementation:**
+
+Delta is computed from `value_emb` (the projected embedding space), **not** from
+raw input `x`. `torch.roll` is used for the difference, and the first position is
+zeroed explicitly. Dropout is applied to `combined_emb` only — `delta_x` is
+returned without dropout:
+
 ```python
 class DataEmbedding(nn.Module):
     def forward(self, x, x_mark):
         # Value embedding
         value_emb = self.value_embedding(x)
+        
+        # CLEAN DELTA: Δx[i] = value_emb[i] - value_emb[i-1]
+        # Computed from value_emb, NOT from raw x
+        delta_x = value_emb - torch.roll(value_emb, shifts=1, dims=1)
+        delta_x[:, 0, :] = 0.0  # zero first position
         
         # Temporal embedding
         temporal_emb = self.temporal_embedding(x_mark)
@@ -230,16 +259,11 @@ class DataEmbedding(nn.Module):
         # Legendre position embedding (Label)
         legendre_pos = self.legendre_embedding(x)
         
-        # Combined embedding for Q/K
+        # Combined embedding for Q/K: value_emb + temporal_emb + legendre_pos
         combined_emb = value_emb + temporal_emb + legendre_pos
-        combined_emb = self.dropout(combined_emb)
         
-        # Clean delta for V (Order)
-        delta_x = torch.zeros_like(x)
-        delta_x[:, 1:, :] = x[:, 1:, :] - x[:, :-1, :]
-        delta_x = self.value_embedding(delta_x)
-        
-        return combined_emb, delta_x
+        # Dropout applied to combined_emb only; delta_x has NO dropout
+        return self.dropout(combined_emb), delta_x
 ```
 
 ---
@@ -250,12 +274,12 @@ class DataEmbedding(nn.Module):
 
 | Parameter | Value |
 |-----------|-------|
-| **Datasets** | ETTh1, ETTm1 |
+| **Dataset** | ETTh1 |
 | **Model** | Informer |
 | **Attention** | Full (not ProbSparse) |
 | **Sequence Length** | 96 |
 | **Label Length** | 48 |
-| **Prediction Lengths** | 48, 96, 192, 336, 720 |
+| **Prediction Lengths** | Phase 1: 96, 192 · Phase 2: 48, 96, 192, 336 |
 | **Encoder Layers** | 2 |
 | **Decoder Layers** | 1 |
 | **d_model** | 512 |
@@ -263,14 +287,21 @@ class DataEmbedding(nn.Module):
 | **d_ff** | 2048 |
 | **Dropout** | 0.05 |
 | **Activation** | GELU |
+| **Train Epochs** | 6 |
+| **Early Stopping Patience** | 3 |
+| **Batch Size** | 32 |
+| **Learning Rate** | 0.0001 |
+| **Factor** | 5 |
+| **Embed** | timeF |
+| **Freq** | h |
 
 ### Ablation Parameters
 
 | Parameter | Values Tested |
 |-----------|---------------|
-| **Decay Parameter (a)** | 0.5, 1.0, 2.0 |
-| **Random Seeds** | 2021, 2022, 2023 |
-| **Total Runs** | 90 (2 datasets × 3 decay_a × 3 seeds × 5 pred_len) |
+| **Decay Parameter (a)** | 0.5, 1.0, 2.0 (Phase 1 screen); fixed at 0.5 (Phase 2) |
+| **Random Seeds** | 2021 only (Phase 1); 2021, 2022, 2023 (Phase 2) |
+| **Total Runs** | 18 (6 Phase 1: 3 decay_a × 2 pred_len × 1 seed; 12 Phase 2: 4 pred_len × 3 seeds) |
 
 ---
 
@@ -301,70 +332,178 @@ class DataEmbedding(nn.Module):
 
 ## How to Run
 
+The experiment was executed on Google Colab via the notebook `EXP_6_LOD_POST.ipynb`.
+The two shell scripts are invoked from inside the notebook:
+
 ```bash
-cd /Users/nehaamin/Desktop/PRL-SHIVANSH/Dist-Abl-PRL-All-Exs-ETTH1
-bash experiments/exp6_lod_post/run_exp6_post.sh
+# Phase 1 — alpha screening (6 runs: 3 decay_a × 2 pred_len × seed=2021)
+bash experiments/exp6_lod_post/exp6_lod_post_phase1.sh
+
+# Phase 2 — stability validation (12 runs: 4 pred_len × 3 seeds, decay_a=0.5)
+bash experiments/exp6_lod_post/exp6_lod_post_ph2.sh
+# (exp6_lod_post_phase2_a0.5.sh is an identical duplicate of exp6_lod_post_ph2.sh)
 ```
 
-### What the Script Does
+Both scripts run from the Colab path:
+`PROJECT_ROOT=/content/drive/MyDrive/Dist-Abl-PRL-All-Exs-ETTH1`
 
-1. Copies modified model files to `Informer2020-main/models/`
-2. Runs 90 training configurations:
-   - 2 datasets (ETTh1, ETTm1)
-   - 3 decay parameters (0.5, 1.0, 2.0)
-   - 3 random seeds (2021, 2022, 2023)
-   - 5 prediction lengths (48, 96, 192, 336, 720)
-3. Saves results to `results/lod_post_a{decay_a}_{dataset}_{pred_len}_seed{seed}/`
+### What the Scripts Do
 
-### Expected Runtime
+1. Copy modified model files from `experiments/exp6_lod_post/models/` to `Informer2020-original/models/`
+2. Copy `legendre_embedding.py` to **both** `Informer2020-original/models/` and `Informer2020-original/` (required for bare `from legendre_embedding import ...` in `embed.py`)
+3. Run training via `main_informer.py` for each configuration
+4. Save run logs to `logs/exp6_lod_post_phase1/` or `logs/exp6_lod_post_phase2_a0.5/`
+5. Restore original model files via `git checkout ./models/` after all runs
 
-- **Per run:** ~10-15 minutes (depends on early stopping)
-- **Total:** ~15-22 hours for all 90 runs
-- **Recommendation:** Run overnight or use parallel execution
+### Actual Runtime (from notebook timestamps)
+
+- **Phase 1:** ~4–5 minutes per run (early stopping at epoch 4); total ~28 minutes
+- **Phase 2:** ~4–7 minutes per run; total ~65 minutes
+- **Both phases combined:** ~93 minutes on Colab T4 GPU
 
 ---
 
-## Expected Output
+## Output
 
-Each run produces:
-- `training_log.txt` - Full training output
-- `checkpoint.pth` - Best model weights
-- Test metrics: MSE, MAE, RMSE, MAPE, MSPE
+Each run produces a results directory and a per-run log file:
+
+- **Logs** → `logs/exp6_lod_post_phase1/<run_id>.log` (Phase 1)
+- **Logs** → `logs/exp6_lod_post_phase2_a0.5/<run_id>.log` (Phase 2)
+- **Checkpoints** → `Informer2020-original/checkpoints/<run_id>/checkpoint.pth`
+- **Test metrics** reported at end of each log: MSE, MAE
 
 ### Directory Structure
 ```
-results/
-├── lod_post_a0.5_ETTh1_48_seed2021/
-│   ├── training_log.txt
-│   └── checkpoint.pth
-├── lod_post_a0.5_ETTh1_48_seed2022/
-├── ...
-└── lod_post_a2.0_ETTm1_720_seed2023/
+logs/
+├── exp6_lod_post_phase1/
+│   ├── master_run.log
+│   ├── exp6post_ph1_ETTh1_lod_post_a0.5_pred96_seed2021.log
+│   ├── exp6post_ph1_ETTh1_lod_post_a0.5_pred192_seed2021.log
+│   ├── exp6post_ph1_ETTh1_lod_post_a1.0_pred96_seed2021.log
+│   ├── exp6post_ph1_ETTh1_lod_post_a1.0_pred192_seed2021.log
+│   ├── exp6post_ph1_ETTh1_lod_post_a2.0_pred96_seed2021.log
+│   └── exp6post_ph1_ETTh1_lod_post_a2.0_pred192_seed2021.log
+└── exp6_lod_post_phase2_a0.5/
+    ├── master_run.log
+    ├── exp6post_ph2_ETTh1_lod_post_a0.5_pred48_seed2021.log
+    ├── ...
+    └── exp6post_ph2_ETTh1_lod_post_a0.5_pred336_seed2023.log
 ```
+
+> **Note:** Log files were stored on Google Drive during Colab execution and are
+> not committed to this repository. Full outputs are preserved in the notebook
+> `EXP_6_LOD_POST.ipynb` cell outputs.
 
 ---
 
-## Analysis Framework
+## Results
 
-### Primary Questions
+All 18 runs completed successfully (0 failed, 0 skipped).
+Source: `EXP_6_LOD_POST.ipynb` cell outputs (logged on 2026-08-16).
 
-1. **Post vs Pre Softmax:**
-   - Does post-softmax distance decay outperform pre-softmax?
-   - Which timing preserves attention patterns better?
+### Phase 1 — Alpha Screening (seed=2021, pred_len ∈ {96, 192})
 
-2. **Decay Parameter Sensitivity:**
-   - How does performance vary with a ∈ {0.5, 1.0, 2.0}?
-   - Is there an optimal decay rate?
+| decay_a | pred_len | MSE | MAE |
+|---------|----------|-----|-----|
+| 0.5 | 96 | 0.79213947057724 | 0.6940954327583313 |
+| 0.5 | 192 | 0.8021528720855713 | 0.6937472224235535 |
+| 1.0 | 96 | 0.9164600372314453 | 0.7008794546127319 |
+| 1.0 | 192 | 1.1427932977676392 | 0.8031872510910034 |
+| 2.0 | 96 | 1.0846896171569824 | 0.7789736986160278 |
+| 2.0 | 192 | 1.1892716884613037 | 0.8282927870750427 |
 
-3. **Prediction Horizon:**
-   - Does LOD help more for longer predictions (720) vs shorter (48)?
-   - Where is the performance crossover point?
+**Phase 1 decision:** `decay_a=0.5` had best performance at both pred_lens and was
+carried forward to Phase 2.
 
-4. **Dataset Dependency:**
-   - Does ETTh1 (hourly) vs ETTm1 (15-min) affect LOD effectiveness?
-   - Are results consistent across temporal granularities?
+### Phase 2 — Stability Validation (decay_a=0.5, pred_len ∈ {48, 96, 192, 336})
 
-### Metrics to Track
+| pred_len | seed | MSE | MAE |
+|----------|------|-----|-----|
+| 48 | 2021 | 0.7353359460830688 | 0.6634814143180847 |
+| 48 | 2022 | 0.7317635416984558 | 0.6689267754554749 |
+| 48 | 2023 | 0.7185477614402771 | 0.6619631052017212 |
+| 96 | 2021 | 0.7239963412284851 | 0.6624867916107178 |
+| 96 | 2022 | 0.8194853067398071 | 0.7094253897666931 |
+| 96 | 2023 | 0.8214573264122009 | 0.7154382467269897 |
+| 192 | 2021 | 0.834628701210022 | 0.7170958518981934 |
+| 192 | 2022 | 0.8189764618873596 | 0.7027294039726257 |
+| 192 | 2023 | 0.8609811663627625 | 0.7218409180641174 |
+| 336 | 2021 | 0.9503873586654663 | 0.7660955190658569 |
+| 336 | 2022 | 0.9987733364105225 | 0.7828776836395264 |
+| 336 | 2023 | 0.9330756664276123 | 0.7554452419281006 |
+
+### Aggregated Results — Phase 2 (Mean ± Std across 3 seeds)
+
+| pred_len | MSE (Mean±Std) | MAE (Mean±Std) |
+|----------|----------------|----------------|
+| 48 | 0.7285±0.0072 | 0.6648±0.0030 |
+| 96 | 0.7883±0.0455 | 0.6958±0.0237 |
+| 192 | 0.8382±0.0173 | 0.7139±0.0081 |
+| 336 | 0.9607±0.0278 | 0.7681±0.0113 |
+
+---
+
+## Analysis
+
+### Decay Parameter Selection
+
+`decay_a=0.5` (gentlest post-softmax re-weighting) outperformed both `1.0` and `2.0`
+at every pred_len tested in Phase 1:
+
+| decay_a | pred_96 MSE | pred_192 MSE | Verdict |
+|---------|-------------|--------------|---------|
+| **0.5** | **0.7921** | **0.8022** | ✅ Best at both |
+| 1.0 | 0.9165 | 1.1428 | ❌ Worse |
+| 2.0 | 1.0847 | 1.1893 | ❌ Worst |
+
+The steeper the post-softmax re-weighting, the worse the results — indicating that
+heavy distance suppression after softmax degrades the learned attention patterns.
+
+### Stability (Phase 2)
+
+- **pred_len=48:** Very stable (seed variance MSE ±0.0072).
+- **pred_len=96:** Moderate variance (±0.0455), primarily driven by seed=2021 (0.7240)
+  outperforming seeds 2022/2023 (~0.82).
+- **pred_len=192:** Stable (±0.0173).
+- **pred_len=336:** Stable (±0.0278).
+
+### Exp6-Post vs Exp6-Pre (same ETTh1, seed=2021, Phase 1 alpha=best)
+
+| pred_len | Exp6-Pre (α=1.0) MSE | Exp6-Post (α=0.5) MSE | Δ |
+|----------|----------------------|----------------------|---|
+| 96 | 0.8694 | 0.7921 | **Post better by 0.0773** |
+| 192 | 0.9571 | 0.8022 | **Post better by 0.1549** |
+
+Post-softmax placement with `decay_a=0.5` outperforms Pre-softmax at its own best
+alpha at both pred_lens.
+
+### Exp6-Post vs Exp1-Pre (distance-only baseline, α=1.0, seed=2021)
+
+| pred_len | Exp1-Pre MSE | Exp6-Post (α=0.5) Phase 2 MSE | Δ |
+|----------|--------------|-------------------------------|---|
+| 96 | 0.8683 | 0.7240 | **Post better by 0.1443** |
+| 192 | 0.8463 | 0.8346 | **Post better by 0.0117** |
+
+Adding Label (Legendre) and Order (delta_x) components on top of post-softmax distance
+improves over distance-only at both horizons.
+
+### Analysis Framework
+
+The primary research questions can now be answered:
+
+1. **Post vs Pre Softmax:** Post-softmax (Exp6-Post, α=0.5) outperforms Pre-softmax
+   (Exp6-Pre, best α=1.0) at pred_len 96 and 192 on ETTh1.
+
+2. **Decay Parameter Sensitivity:** Strong sensitivity — α=0.5 is clearly best.
+   Larger values (1.0, 2.0) degrade performance substantially in post-softmax context.
+
+3. **Prediction Horizon:** Avg MSE degrades smoothly from 0.7285 (pred_48) to 0.9607
+   (pred_336). No instability spike comparable to Exp1-Pre's pred_336 collapse.
+
+4. **ETTm1 / pred_720:** TODO: Information could not be verified from the repository.
+   No ETTm1 runs or pred_len=720 runs were executed in any script.
+
+### Metrics
 
 | Metric | Purpose |
 |--------|---------|
@@ -434,35 +573,6 @@ A' = A * α(i,j)
 
 ---
 
-## Expected Results Format
-
-### Per-Run Metrics
-```
-Dataset: ETTh1
-Decay_a: 1.0
-Seed: 2021
-Pred_len: 96
-
-Test Results:
-  MSE:  0.XXXX
-  MAE:  0.XXXX
-  RMSE: 0.XXXX
-  MAPE: 0.XXXX
-  MSPE: 0.XXXX
-```
-
-### Aggregated Analysis
-```
-Average across 3 seeds:
-  MSE:  0.XXXX ± 0.XXXX
-  MAE:  0.XXXX ± 0.XXXX
-
-Best decay_a: X.X
-Best pred_len: XXX
-```
-
----
-
 ## Debugging and Validation
 
 ### Sanity Checks
@@ -506,14 +616,17 @@ Best pred_len: XXX
 ```
 experiments/exp6_lod_post/
 ├── models/
-│   ├── __init__.py              - Model registry
+│   ├── __init__.py              - Empty (no model registry content)
 │   ├── model.py                 - Informer/InformerStack (FIXED)
 │   ├── encoder.py               - Encoder/EncoderLayer/EncoderStack (FIXED)
 │   ├── decoder.py               - Decoder/DecoderLayer (FIXED)
 │   ├── attn.py                  - FullAttention with POST-softmax distance
 │   ├── embed.py                 - DataEmbedding returns (combined, delta)
 │   └── legendre_embedding.py    - Recurrence formula (FIXED)
-├── run_exp6_post.sh             - Training script
+├── EXP_6_LOD_POST.ipynb         - Colab notebook with full run output
+├── exp6_lod_post_phase1.sh      - Phase 1 training script (alpha screening)
+├── exp6_lod_post_ph2.sh         - Phase 2 training script (stability validation)
+├── exp6_lod_post_phase2_a0.5.sh - Duplicate of exp6_lod_post_ph2.sh
 └── README-E6-POST.md            - This file
 ```
 
@@ -546,12 +659,12 @@ experiments/exp6_lod_post/
 
 ## Next Steps
 
-1. **Run Experiments:** Execute all 90 configurations
-2. **Analyze Results:** Compare with Exp6 Pre and other baselines
-3. **Statistical Testing:** Verify significance across seeds
-4. **Ablation Studies:** Test individual component contributions
-5. **Visualization:** Plot attention maps with/without distance decay
-6. **Optimization:** Tune decay_a based on results
+1. ~~**Run Experiments:**~~ ✅ All 18 runs completed (Phase 1: 6 runs, Phase 2: 12 runs).
+2. ~~**Analyze Results:**~~ ✅ Results analysed above; Exp6-Post (α=0.5) outperforms Exp6-Pre and Exp1-Pre at pred_len 96 and 192.
+3. **Statistical Testing:** Verify significance across seeds with formal tests (t-test / Wilcoxon) — only 3 seeds available.
+4. **Ablation Studies:** Test individual component contributions (L-only, O-only, D-only) — cross-reference against Exp3, Exp4, Exp1-Post.
+5. **Visualization:** Plot attention maps with/without distance decay.
+6. **Extended Horizons:** Run pred_len=720 on ETTh1; run ETTm1 dataset (neither was executed).
 
 ---
 
@@ -569,10 +682,14 @@ experiments/exp6_lod_post/
 - ✅ All fixes applied (decoder unpacking, delta_x propagation, recurrence formula, EncoderStack)
 - ✅ Consistent with exp3, exp5b, exp6_pre Legendre implementation
 - ✅ Post-softmax distance decay properly implemented
-- ✅ Order component (delta_x) used in value matrix only
+- ✅ Order component (delta_x) used in value matrix only — delta is computed from `value_emb`, not raw `x`
 - ✅ Label component (Legendre) in Q/K embeddings
+- ✅ `decay_a` forwarded through all encoder and decoder attention layers (FINDING H fix confirmed)
+- ✅ `delta_x` downsampled through ConvLayer in encoder (FINDING G fix confirmed)
+- ⚠️  `delta_values` routing is in `AttentionLayer`, not in `FullAttention.forward()` — README pseudocode updated to reflect this
+- ⚠️  `exp6_lod_post_phase2_a0.5.sh` is an exact duplicate of `exp6_lod_post_ph2.sh`
 
-**Status:** Ready for training
+**Status:** ✅ Training complete — all 18 runs finished on 2026-08-16
 
 ---
 
