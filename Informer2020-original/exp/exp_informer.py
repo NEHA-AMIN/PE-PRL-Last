@@ -31,18 +31,18 @@ class Exp_Informer(Exp_Basic):
             e_layers = self.args.e_layers if self.args.model=='informer' else self.args.s_layers
             model = model_dict[self.args.model](
                 self.args.enc_in,
-                self.args.dec_in, 
-                self.args.c_out, 
-                self.args.seq_len, 
+                self.args.dec_in,
+                self.args.c_out,
+                self.args.seq_len,
                 self.args.label_len,
-                self.args.pred_len, 
+                self.args.pred_len,
                 self.args.factor,
-                self.args.d_model, 
-                self.args.n_heads, 
+                self.args.d_model,
+                self.args.n_heads,
                 e_layers, # self.args.e_layers,
-                self.args.d_layers, 
+                self.args.d_layers,
                 self.args.d_ff,
-                self.args.dropout, 
+                self.args.dropout,
                 self.args.attn,
                 self.args.embed,
                 self.args.freq,
@@ -51,7 +51,8 @@ class Exp_Informer(Exp_Basic):
                 self.args.distil,
                 self.args.mix,
                 self.device,
-                self.args.pe_mode,
+                pe_mode=getattr(self.args, 'pe_mode', 'vanilla'),
+                decay_a=getattr(self.args, 'decay_a', 1.0),
             ).float()
         
         if self.args.use_multi_gpu and self.args.use_gpu:
