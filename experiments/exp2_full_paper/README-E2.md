@@ -48,7 +48,7 @@ O_i = (1/√d_model) · Σ_{j≠i} α(i,j) · (w_ij ⊙ Δx_ij)
 
 where:
   Δx_ij = X_i - X_j                 [Signed displacement - preserves direction]
-  α(i,j) = 1 / (1 + |i-j|^a)        [Index-based decay, a=1.0]
+  α(i,j) = 1 / (1 + |i-j|^a)        [Index-based decay, a=1.0 default in embed.py]
   w_ij = 1 / (1 + d_ij)             [Feature-space weighting]
   d_ij = ||X_i - X_j||_1            [L1 distance]
   ⊙ = element-wise multiplication
@@ -64,7 +64,7 @@ Scaling: 1/√d_model applied for numerical stability
 
 #### `models/embed.py`
 **Changes:**
-- ✅ Removed standard positional embedding
+- ✅ Removed standard positional embedding (instantiated but never called in `forward()`)
 - ✅ Kept temporal embedding (unlike Exp3)
 - ✅ Added Legendre embedding initialization
 - ✅ Added Distance operator initialization
@@ -90,6 +90,10 @@ distance_pos = self.distance_operator(legendre_pos) * self.distance_scale
 x = value_emb + temporal_emb + legendre_pos + distance_pos
 ```
 
+**Note:** `self.position_embedding` (standard sinusoidal PE) is still instantiated in `__init__` as dead weight but is never called in `forward()`. It adds unused parameters to the checkpoint.
+
+**Note on `decay_a`:** The default value in `embed.py` is `decay_a=1.0`. During Phase 1 runs, the shell script patches this value in-place via `sed` for each alpha sweep. There is no CLI argument for `decay_a` in this experiment — it is hardcoded and overwritten by the script.
+
 #### `models/legendre_embedding.py`
 - Pre-computed Legendre polynomials for positions 0 to max_len
 - Orthogonality verified
@@ -106,21 +110,34 @@ x = value_emb + temporal_emb + legendre_pos + distance_pos
 
 ## Configuration
 
-| Parameter | Value |
-|-----------|-------|
-| Dataset | ETTh1 |
-| Model | Informer |
-| Attention | Full (not ProbSparse) |
-| Sequence Length | 96 |
-| Label Length | 48 |
-| Prediction Length | 24 |
-| Encoder Layers | 2 |
-| Decoder Layers | 1 |
-| d_model | 512 |
-| **Decay Parameter (a)** | 1.0 |
-| **Distance Type** | L1 |
-| **Scaling** | 1/√d_model |
-| **Temporal Embedding** | ✅ Included |
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Dataset | ETTh1 | `exp2_phase1.sh` |
+| Model | Informer | `exp2_phase1.sh` |
+| Attention | Full (not ProbSparse) | `--attn full` |
+| Distillation | Enabled (default, `--distil` not overridden) | Informer default |
+| Sequence Length | 96 | `--seq_len 96` |
+| Label Length | 48 | `--label_len 48` |
+| Prediction Length | 96, 192 (Phase 1); 192, 336 (Phase 2 script) | shell scripts |
+| Encoder Layers | 2 | `--e_layers 2` |
+| Decoder Layers | 1 | `--d_layers 1` |
+| d_model | 512 | `--d_model 512` |
+| n_heads | 8 | `--n_heads 8` |
+| d_ff | 2048 | `--d_ff 2048` |
+| dropout | 0.05 | `--dropout 0.05` |
+| Embed type | timeF | `--embed timeF` |
+| Frequency | h | `--freq h` |
+| Activation | gelu | `--activation gelu` |
+| Learning rate | 0.0001 | `--learning_rate 0.0001` |
+| Batch size | 32 | `--batch_size 32` |
+| Factor | 5 | `--factor 5` |
+| enc_in / dec_in / c_out | 7 | ETTh1 multivariate (7 features) |
+| Train epochs | 6 | `--train_epochs 6` |
+| Patience (early stop) | 3 | `--patience 3` |
+| **Decay Parameter (a)** | 1.0 default in `embed.py`; swept {0.5, 1.0, 2.0} in Phase 1; fixed 0.5 in Phase 2 | `embed.py`, shell scripts |
+| **Distance Type** | L1 | `distance_type='l1'` |
+| **Scaling** | 1/√d_model | `embed.py` |
+| **Temporal Embedding** | ✅ Included | `embed.py` |
 
 ---
 
@@ -138,11 +155,37 @@ x = value_emb + temporal_emb + legendre_pos + distance_pos
 
 ---
 
-## How to Run
+## Execution Protocol
+
+This experiment uses a **two-phase protocol**:
+
+### Phase 1 — Alpha Exploration (`exp2_phase1.sh`)
+
+- **Goal:** Identify the best decay parameter `a` before committing to full multi-seed runs.
+- **Alpha values swept:** {0.5, 1.0, 2.0}
+- **pred_len:** {96, 192}
+- **Seed:** 2021 (single — exploration only)
+- **Total runs:** 6 (3 alpha × 1 seed × 2 pred_len)
+- **Decision rule:** If same alpha wins at both pred_lens → proceed to Phase 2 with that alpha. If different alpha wins at each → run full grid.
+
+### Phase 2 — Results Stability (`exp2_phase2_alpha0.5.sh`)
+
+- **Goal:** Confirm stability of best alpha across multiple seeds and longer horizons.
+- **Alpha fixed:** 0.5
+- **pred_len (script):** {192, 336}
+- **Seeds:** {2021, 2022, 2023}
+- **Total runs (script):** 6 (2 pred_len × 3 seeds)
+
+**Note:** `mse_mae_scores_sorted.txt` records Phase 2 results for pred_len ∈ {48, 96, 192} with 3 seeds (9 runs). Results for pred_len=336 are not present in the central log file, which is inconsistent with the Phase 2 script's declared pred_len loop. The pred_len=336 Phase 2 runs may not have completed or were not recorded.
+
+### How to Run
 
 ```bash
-cd /Users/neha/Desktop/PRL-SHIVANSH/distance-abl-PRL
-bash experiments/exp2_full_paper/run_exp2.sh
+# Phase 1 — alpha exploration
+bash experiments/exp2_full_paper/exp2_phase1.sh
+
+# Phase 2 — stability confirmation (alpha=0.5)
+bash experiments/exp2_full_paper/exp2_phase2_alpha0.5.sh
 ```
 
 **Note:** Training will be slower than Exp1 due to O(L²) distance operator.
@@ -151,40 +194,74 @@ bash experiments/exp2_full_paper/run_exp2.sh
 
 ## Expected Output
 
-The script will:
-1. Copy modified model files to `Informer2020/models/`
-2. Train the model for 6 epochs (with early stopping)
-3. Test on the test set
-4. Print final metrics: MSE, MAE, RMSE, MAPE, MSPE
-5. Save results to `results/exp2_full_paper/training_log.txt`
+Each phase script will:
+1. Copy modified model files to `Informer2020-original/models/`
+2. Patch `decay_a` in `embed.py` via `sed` (Phase 1 only)
+3. Train the model for up to 6 epochs (with early stopping, patience=3)
+4. Test on the test set
+5. Print final metrics: MSE, MAE
+6. Save per-run logs to `logs/exp2_phase1/<RUN_ID>.log` or `logs/exp2_phase2/<RUN_ID>.log`
+7. Save results to `results/<RUN_ID>/`
 
 ---
 
 ## Results
 
-**Training completed with early stopping after epoch 4.**
+Source: `mse_mae_scores_sorted.txt`
 
-| Metric | Value |
-|--------|-------|
-| MSE    | **0.8036** |
-| MAE    | **0.7102** |
-| RMSE   | 0.8964 |
-| MAPE   | - |
-| MSPE   | - |
+### Phase 1 — Alpha Exploration (pred_len ∈ {96, 192}, seed=2021)
 
-**Best Validation Loss:** 0.7742 (Epoch 1)
+**Note:** Only α=1.0 runs are recorded in `mse_mae_scores_sorted.txt`. Results for α=0.5 and α=2.0 are absent from the central log file.
+
+| Alpha | pred_len | MSE | MAE |
+|-------|---------|-----|-----|
+| 1.0 | 96 | 0.8242 | 0.7279 |
+| 1.0 | 192 | 0.9002 | 0.7511 |
+
+### Phase 2 — Results Stability (alpha=0.5, seeds 2021/2022/2023)
+
+**Note:** The Phase 2 script targets pred_len ∈ {192, 336}, but the central results file records results for pred_len ∈ {48, 96, 192}. pred_len=336 results are absent.
+
+#### Per-run results
+
+| pred_len | Seed | MSE | MAE |
+|---------|------|-----|-----|
+| 48 | 2021 | 0.9983 | 0.7945 |
+| 48 | 2022 | 0.7760 | 0.6871 |
+| 48 | 2023 | 0.9125 | 0.7590 |
+| 96 | 2021 | 0.8476 | 0.7159 |
+| 96 | 2022 | 0.8439 | 0.7219 |
+| 96 | 2023 | 0.8688 | 0.7373 |
+| 192 | 2021 | 1.1408 | 0.8648 |
+| 192 | 2022 | 0.8643 | 0.7345 |
+| 192 | 2023 | 0.8823 | 0.7523 |
+
+#### Average across seeds
+
+| pred_len | Avg MSE | Avg MAE | #Runs |
+|---------|---------|---------|-------|
+| 48 | 0.8956 | 0.7469 | 3 |
+| 96 | 0.8534 | 0.7250 | 3 |
+| 192 | 0.9625 | 0.7839 | 3 |
+| 336 | TODO: pred_len=336 Phase 2 results not found in mse_mae_scores_sorted.txt | — | 0 |
 
 ---
 
 ## Comparison with Other Experiments
 
-| Experiment | Components | Temporal | MSE ↓ | MAE ↓ | Rank |
-|------------|-----------|----------|-------|-------|------|
-| Vanilla | Standard PE | ✅ | **0.519** | **0.513** | 🥇 1st |
-| Exp 1 (D) | Distance | ✅ | **0.725** | **0.652** | 🥈 2nd |
-| **Exp 2 (LOD)** | **L+O+D** | ✅ | **0.804** | **0.710** | 🥉 **3rd** |
-| Exp 3 (L) | Label | ❌ | **1.124** | **0.855** | 4th |
-| Exp 4 (O) | Order | ✅ | ? | ? | ? |
+Source: `mse_mae_scores_sorted.txt`. Values shown are **Phase 2 averages** (3 seeds) where available; Phase 1 single-seed otherwise. All pred_len values shown separately — no single-point aggregate across pred_lens is used.
+
+### Exp2 (LOD) vs Exp1-Pre (D only) — Phase 2 averages
+
+| Experiment | Components | pred_len=48 Avg MSE | pred_len=96 Avg MSE | pred_len=192 Avg MSE | pred_len=336 Avg MSE |
+|------------|-----------|---------------------|---------------------|----------------------|----------------------|
+| Exp1-Pre (D) | Distance pre-softmax | 0.7980 | 0.8670 | 0.9373 | 1.0368 |
+| **Exp2 (LOD)** | **L+O+D** | **0.8956** | **0.8534** | **0.9625** | — |
+| Exp3b (L) | Label only | 0.9186 | 0.8858 | 0.8913 | 0.9668 |
+| Exp4 (O) | Order only | 0.8658 | 1.0035 | 0.9507 | — |
+| Vanilla | Standard PE | TODO: Information could not be verified from the repository. | | | |
+
+**Note:** Vanilla baseline values are not present in `mse_mae_scores_sorted.txt`. The `results/baseline_ph1_ETTh1_pred96_seed2021/` and `results/baseline_ph1_ETTh1_pred192_seed2021/` directories exist but are empty.
 
 ---
 
@@ -192,33 +269,37 @@ The script will:
 
 ### Key Findings
 
-1. **LOD Underperforms Distance-Only (Exp1)**
-   - Exp2 (LOD): MSE = 0.804
-   - Exp1 (D): MSE = 0.725
-   - **Difference:** +0.079 MSE (11% worse)
+1. **LOD vs Distance-Only (Exp1-Pre) — pred_len=96**
+   - Exp2 (LOD) avg MSE at pred_96: 0.8534
+   - Exp1-Pre (D) avg MSE at pred_96: 0.8670
+   - At pred_len=96, LOD is marginally better than Distance-only by 0.0136 MSE.
 
-2. **Component Interaction**
-   - Adding Label (L) and Order (O) to Distance (D) **degraded** performance
-   - This suggests **negative synergy** between components
-   - Distance alone is more effective than the full LOD formulation
+2. **LOD vs Distance-Only (Exp1-Pre) — pred_len=48**
+   - Exp2 (LOD) avg MSE at pred_48: 0.8956
+   - Exp1-Pre (D) avg MSE at pred_48: 0.7980
+   - At pred_len=48, Distance-only outperforms LOD by 0.0976 MSE.
 
-3. **Ranking Summary**
-   ```
-   Vanilla (0.519) < Exp1-D (0.725) < Exp2-LOD (0.804) < Exp3-L (1.124)
-   ```
+3. **Seed Instability at pred_len=192**
+   - Seed 2021 gives MSE=1.1408 while seeds 2022 and 2023 give 0.8643 and 0.8823.
+   - The average (0.9625) is dominated by the outlier at seed=2021. Median would be 0.8823.
 
-4. **Possible Explanations**
+4. **Component Interaction**
+   - Results are mixed across pred_len: LOD does not consistently outperform or underperform single-component variants.
+   - No clear synergistic benefit of combining all three components is evident from the data.
+
+5. **Possible Explanations**
    - **Overfitting:** Too many positional signals may confuse the model
    - **Interference:** Label and Order components may interfere with Distance
    - **Computational:** O(L²) complexity may require more training epochs
    - **Scaling:** Distance operator scaling (1/√d_model) may need tuning
+   - **Double-counting:** As documented in `NOTE.md`, `w_ij` is highly correlated with `α(i,j)` when both are applied to Legendre embeddings (both are monotone functions of |i-j|), causing the combined weight to decay faster than either factor alone
 
 ---
 
 ## Analysis Questions
 
-1. **Synergy Test:** Does combining L+O+D perform better than D alone (Exp1)?
-2. **Baseline Comparison:** Does LOD approach vanilla performance (0.519)?
+1. **Synergy Test:** Does combining L+O+D perform better than D alone (Exp1) consistently across all pred_lens?
+2. **Baseline Comparison:** Does LOD approach vanilla performance? (Baseline not verifiable — see Results section.)
 3. **Component Contribution:** Which component contributes most to performance?
 4. **Computational Trade-off:** Is the O(L²) complexity justified by performance gains?
 
@@ -232,6 +313,8 @@ From the paper's formulation:
 - **Distance:** Encodes proximity bias (nearby positions matter more)
 
 **This experiment tests:** Do these three components work together synergistically to encode positional information effectively?
+
+**Mathematical note (from `NOTE.md`):** When `distance_operator` is applied to Legendre embeddings (not value embeddings), the feature-space weighting `w_ij = 1/(1+||P_i−P_j||_1)` becomes a deterministic fixed function of index distance (because Legendre embeddings are non-trainable buffers). This makes `w_ij` redundant with the index-based decay `α(i,j)` — both suppress long-range pairs and amplify short-range pairs. The effective attention window shrinks significantly due to this double-decay. For middle positions of the sequence, left/right symmetric contributions nearly cancel, yielding a near-zero ordering signal for most positions.
 
 ---
 
