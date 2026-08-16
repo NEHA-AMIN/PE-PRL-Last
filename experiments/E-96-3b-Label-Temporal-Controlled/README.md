@@ -13,7 +13,7 @@ Where:
 - `X_i` = Token embedding (semantic content)
 - `P_i` = Legendre polynomial position embedding (label)
 
-**The problem:** Exp 3 removed BOTH sinusoidal positional encoding AND temporal embedding simultaneously. When it achieved MSE = 1.124 (compared to vanilla's 0.519), we cannot determine if the poor performance was caused by:
+**The problem:** Exp 3 removed BOTH sinusoidal positional encoding AND temporal embedding simultaneously. When it achieved MSE = 1.0989 (pred=96, seed=2021, from `mse_mae_scores_sorted.txt`), compared to vanilla's MSE — TODO: vanilla baseline MSE could not be verified from the repository — we cannot determine if the poor performance was caused by:
 
 1. **Legendre polynomials being an inadequate label**, OR
 2. **Missing temporal context** (hour/day/month/weekday information)
@@ -42,7 +42,7 @@ Everything else (attention mechanism, model architecture, temporal context) rema
 | **Ordering Operator** | ❌ | ❌ | ❌ |
 | **Distance Decay** | ❌ | ❌ | ❌ |
 | **Attention Type** | Full/Prob | Full | Full |
-| **MSE (ETTh1, pred=96)** | 0.519 | 1.124 | **TBD** |
+| **MSE (ETTh1, pred=96)** | TODO: unverifiable from repository | 1.0989 (seed=2021, Phase 1) | **0.8858 (avg 3 seeds, Phase 2)** |
 
 ---
 
@@ -82,7 +82,7 @@ Where:
 
 ### Research Questions:
 
-1. **Is Exp 3's poor performance (MSE = 1.124) due to Legendre being a bad label, or due to missing temporal context?**
+1. **Is Exp 3's poor performance (MSE = 1.0989 at pred=96, seed=2021) due to Legendre being a bad label, or due to missing temporal context?**
 
 2. **When temporal context is restored, how does Legendre-only labelling perform compared to vanilla sinusoidal PE?**
 
@@ -96,9 +96,46 @@ By restoring temporal embedding, we create a fair comparison:
 
 ---
 
-## 5. Expected Results and Interpretation
+## 5. Results and Interpretation
 
-### Three Possible Outcomes:
+### Actual Results (from `mse_mae_scores_sorted.txt`)
+
+#### Phase 1 — Screen (seed=2021 only)
+
+| pred_len | MSE    | MAE    |
+|----------|--------|--------|
+| 96       | 0.9265 | 0.7660 |
+| 192      | 0.8888 | 0.7347 |
+
+#### Phase 2 — Full Sweep (3 seeds × 4 pred_lens = 12 runs)
+
+| pred_len | seed | MSE    | MAE    |
+|----------|------|--------|--------|
+| 48       | 2021 | 0.8706 | 0.7344 |
+| 48       | 2022 | 0.8937 | 0.7399 |
+| 48       | 2023 | 0.9917 | 0.7959 |
+| 96       | 2021 | 0.8823 | 0.7573 |
+| 96       | 2022 | 0.8450 | 0.7373 |
+| 96       | 2023 | 0.9302 | 0.7362 |
+| 192      | 2021 | 0.9006 | 0.7564 |
+| 192      | 2022 | 0.8847 | 0.7430 |
+| 192      | 2023 | 0.8886 | 0.7564 |
+| 336      | 2021 | 0.9989 | 0.8081 |
+| 336      | 2022 | 0.9770 | 0.7949 |
+| 336      | 2023 | 0.9244 | 0.7550 |
+
+#### Phase 2 — Averages across 3 seeds
+
+| pred_len | Avg MSE | Avg MAE | #Runs |
+|----------|---------|---------|-------|
+| 48       | 0.9186  | 0.7567  | 3     |
+| 96       | 0.8858  | 0.7436  | 3     |
+| 192      | 0.8913  | 0.7519  | 3     |
+| 336      | 0.9668  | 0.7860  | 3     |
+
+---
+
+### Three Possible Outcomes (Pre-registered)
 
 #### Scenario A: Exp 3b MSE ≈ Exp 3 MSE (~1.1)
 **Interpretation:** Temporal embedding is NOT the primary cause of failure. Legendre labelling genuinely fails without additional structure (ordering/distance). The label alone is insufficient for the model to learn temporal patterns.
@@ -118,6 +155,14 @@ By restoring temporal embedding, we create a fair comparison:
 **Interpretation:** Legendre polynomials are a valid replacement for sinusoidal PE when combined with temporal context. The orthogonal distinctiveness property is sufficient for position encoding in time series forecasting.
 
 **Scientific Conclusion:** Sinusoidal PE is not strictly necessary - orthogonal polynomial bases can serve as effective positional encodings when paired with temporal embeddings.
+
+---
+
+### Observed Outcome
+
+The actual Phase 2 averages place Exp 3b between Scenario A and Scenario B. Exp 3b avg MSE (pred=96: 0.8858) is substantially below Exp 3 Phase 1 (1.0989), confirming that missing temporal embedding was a major cause of Exp 3's failure. However, Exp 3b remains above Exp1-Pre avg MSE (pred=96: 0.8670) — see reference table in `exp3b_phase2.sh`. Scenario B (partial recovery) is the best characterisation: restoring temporal context significantly helps, but Legendre-only labelling does not fully close the gap to Exp1-Pre at pred=96 or pred=336.
+
+TODO: Vanilla baseline MSE could not be verified from the repository; a direct Exp 3b vs. Vanilla comparison cannot be confirmed numerically.
 
 ---
 
@@ -168,69 +213,106 @@ By restoring temporal embedding, we create a fair comparison:
 ### Execute the experiment:
 
 ```bash
-bash experiments/E-96-3b-Label-Temporal-Controlled/run_exp3b.sh
+# Phase 1 — quick screen (pred_len 96 & 192, seed 2021, 2 runs)
+bash experiments/E-96-3b-Label-Temporal-Controlled/exp3b_phase1.sh
+
+# Phase 2 — full sweep (3 seeds × 4 pred_lens = 12 runs)
+bash experiments/E-96-3b-Label-Temporal-Controlled/exp3b_phase2.sh
 ```
 
 ### Experiment Configuration:
 
-- **Datasets:** ETTh1 (hourly), ETTm1 (15-minute)
+- **Dataset:** ETTh1 (hourly)
 - **Seeds:** 2021, 2022, 2023
-- **Prediction Lengths:** 48, 96, 192, 336, 720
-- **Total Runs:** 30 (2 datasets × 3 seeds × 5 pred_lens)
+- **Prediction Lengths:** 48, 96, 192, 336
+- **Total Runs:** 12 (1 dataset × 3 seeds × 4 pred_lens, Phase 2)
 
 ### Hyperparameters:
 
 ```bash
+--model informer
+--data ETTh1
+--root_path ./data/ETT/
+--data_path ETTh1.csv
+--features M
+--target OT
+--freq h
 --seq_len 96
 --label_len 48
+--enc_in 7
+--dec_in 7
+--c_out 7
 --d_model 512
 --n_heads 8
 --e_layers 2
 --d_layers 1
 --d_ff 2048
---batch_size 32
---learning_rate 0.0001
+--factor 5
+--padding 0
+--distil
 --dropout 0.05
 --attn full
 --embed timeF
+--activation gelu
+--mix
+--train_epochs 6
+--batch_size 32
+--patience 3
+--learning_rate 0.0001
+--lradj type1
+--itr 1
+--num_workers 0
 ```
+
+### Import Resolution Note
+
+`embed.py` uses a bare `from legendre_embedding import LegendrePositionEmbedding`. The shell scripts resolve this by:
+1. Setting `PYTHONPATH="$INFORMER_DIR/models:$INFORMER_DIR:$PYTHONPATH"` at run time.
+2. Copying `legendre_embedding.py` to **both** `$INFORMER_DIR/models/` and `$INFORMER_DIR/` (Informer root).
+
+After each run, the scripts restore the original Informer models via `git checkout -- ./models/` and remove the root-level copy.
 
 ### Results Location:
 
+Phase 2 result directories follow the naming pattern:
+
 ```
-results/exp3b_label_temporal_ETTh1_48_seed2021/
-results/exp3b_label_temporal_ETTh1_96_seed2021/
-results/exp3b_label_temporal_ETTh1_192_seed2021/
-...
-results/exp3b_label_temporal_ETTm1_720_seed2023/
+results/exp3b_ph2_ETTh1_leg_temporal_pred{pred_len}_seed{seed}/
+```
+
+Examples:
+```
+results/exp3b_ph2_ETTh1_leg_temporal_pred48_seed2021/
+results/exp3b_ph2_ETTh1_leg_temporal_pred96_seed2021/
+results/exp3b_ph2_ETTh1_leg_temporal_pred192_seed2021/
+results/exp3b_ph2_ETTh1_leg_temporal_pred336_seed2023/
+```
+
+Phase 1 result directories follow:
+```
+results/exp3b_ph1_ETTh1_leg_temporal_pred{pred_len}_seed2021/
 ```
 
 ---
 
 ## 8. Result Interpretation Guide
 
-### After Results Are Available:
-
 #### Compare Exp 3b vs Exp 3 (Isolate Temporal Effect):
 
 ```bash
-# Exp 3 (Label Only): MSE = 1.124
-# Exp 3b (Label + Temporal): MSE = ?
+# Exp 3 (Label Only, pred=96, seed=2021): MSE = 1.0989
+# Exp 3b (Label + Temporal, pred=96, avg 3 seeds): MSE = 0.8858
 
-# If Exp 3b << Exp 3:
+# Exp 3b << Exp 3:
 #   → Temporal embedding was critical
-#   → Legendre labels work with temporal context
-
-# If Exp 3b ≈ Exp 3:
-#   → Temporal embedding not the issue
-#   → Legendre labels fundamentally insufficient
+#   → Legendre labels work substantially better with temporal context
 ```
 
 #### Compare Exp 3b vs Vanilla (Isolate PE Type):
 
 ```bash
-# Vanilla (Sinusoidal + Temporal): MSE = 0.519
-# Exp 3b (Legendre + Temporal): MSE = ?
+# Vanilla (Sinusoidal + Temporal): MSE = TODO: unverifiable from repository
+# Exp 3b (Legendre + Temporal, pred=96, avg 3 seeds): MSE = 0.8858
 
 # If Exp 3b ≈ Vanilla:
 #   → Legendre is a valid PE replacement
@@ -244,8 +326,8 @@ results/exp3b_label_temporal_ETTm1_720_seed2023/
 #### Compare Exp 3b vs Exp 5b (Isolate Ordering Effect):
 
 ```bash
-# Exp 3b (Label + Temporal): MSE = ?
-# Exp 5b (Label + Temporal + Ordering): MSE = ?
+# Exp 3b (Label + Temporal, pred=96, avg 3 seeds): MSE = 0.8858
+# Exp 5b (Label + Temporal + Ordering): MSE = TODO: value not available in this experiment's scope
 
 # Difference shows the value of ordering operator
 # on top of label + temporal baseline
@@ -273,4 +355,4 @@ With 3 seeds per configuration, compute:
 
 By restoring temporal embedding while keeping Legendre labels, we isolate the effect of positional encoding type (Sinusoidal vs Legendre) in a fair comparison with vanilla Informer.
 
-The results will definitively show whether orthogonal polynomial labels can serve as effective positional encodings when combined with temporal information.
+Both phases completed. Phase 2 (12 runs: 3 seeds × 4 pred_lens) shows Exp 3b avg MSE of 0.8858 at pred=96, substantially below Exp 3's 1.0989 — confirming temporal embedding was a major cause of Exp 3's failure. Legendre labels combined with temporal context provide meaningful partial recovery. Exp 3b does not fully reach Exp1-Pre performance (pred=96 avg 0.8670), indicating that sinusoidal PE carries additional information beyond what Legendre labels alone provide.
