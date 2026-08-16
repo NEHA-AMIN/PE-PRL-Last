@@ -79,11 +79,13 @@ cp "$EXP_DIR/models/embed.py"              "$INFORMER_DIR/models/embed.py"
 cp "$EXP_DIR/models/encoder.py"            "$INFORMER_DIR/models/encoder.py"
 cp "$EXP_DIR/models/decoder.py"            "$INFORMER_DIR/models/decoder.py"
 cp "$EXP_DIR/models/model.py"              "$INFORMER_DIR/models/model.py"
-# CRITICAL: embed.py does `from legendre_embedding import LegendrePositionEmbedding`
-# at import time. Without this file the module load fails at runtime.
+# CRITICAL: embed.py uses `from legendre_embedding import LegendrePositionEmbedding`
+# This is a bare (non-package) import. Python resolves it from the CWD ($INFORMER_DIR)
+# and from inside the models/ package directory. Copy to BOTH locations to be safe.
 cp "$EXP_DIR/models/legendre_embedding.py" "$INFORMER_DIR/models/legendre_embedding.py"
+cp "$EXP_DIR/models/legendre_embedding.py" "$INFORMER_DIR/legendre_embedding.py"
 
-echo "File copy complete (7 files including legendre_embedding.py)." | tee -a "$MASTER_LOG"
+echo "File copy complete (7 files + legendre_embedding.py in models/ and root)." | tee -a "$MASTER_LOG"
 echo "" | tee -a "$MASTER_LOG"
 
 # --- COUNTERS ---
@@ -121,7 +123,7 @@ for DECAY_A in 0.5 1.0 2.0; do
         # PYTHON RUN
         cd "$INFORMER_DIR" || { echo "ERROR: cannot cd to $INFORMER_DIR" | tee -a "$MASTER_LOG"; exit 1; }
 
-        if python -u main_informer.py \
+        python -u main_informer.py \
             --model informer \
             --data ETTh1 \
             --root_path ./data/ETT/ \
@@ -151,14 +153,16 @@ for DECAY_A in 0.5 1.0 2.0; do
             --itr 1 \
             --decay_a "$DECAY_A" \
             --des "$RUN_ID" \
-            2>&1 | tee "$RUN_LOG"; then
+            2>&1 | tee "$RUN_LOG"
+        PYTHON_EXIT=${PIPESTATUS[0]}
 
+        if [ "$PYTHON_EXIT" -eq 0 ]; then
             COMPLETED=$((COMPLETED + 1))
             echo "STATUS: COMPLETED" | tee -a "$RUN_LOG"
             echo "STATUS: COMPLETED" | tee -a "$MASTER_LOG"
         else
             FAILED=$((FAILED + 1))
-            echo "STATUS: FAILED — check $RUN_LOG" | tee -a "$MASTER_LOG"
+            echo "STATUS: FAILED (exit $PYTHON_EXIT) — check $RUN_LOG" | tee -a "$MASTER_LOG"
         fi
 
         echo "End: $(date)" | tee -a "$MASTER_LOG"
@@ -170,6 +174,8 @@ done
 # --- RESTORE ORIGINAL MODELS ---
 cd "$INFORMER_DIR" || exit 1
 git checkout ./models/
+# Also remove the root-level legendre_embedding.py that was added for the import fix
+rm -f "$INFORMER_DIR/legendre_embedding.py"
 
 # --- SUMMARY TABLE ---
 echo "============================================================" | tee -a "$MASTER_LOG"
