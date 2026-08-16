@@ -234,6 +234,12 @@ class DataEmbedding_formula_b_sem(nn.Module):
         return self.dropout(val + temp + ordering)  # [B, L, D]
 ```
 
+> **Implementation note:** `__init__` also initialises `self._diag_step = 0`
+> (`embed.py` line 241).  During training, every 100 steps the forward pass
+> prints diagnostics tagged `[FORMULA_B_SEM step=N]` reporting
+> `val_norm`, `ordering_norm`, `temp_norm`, `x_bar`, and `ordering/val`.
+> This is a training-time diagnostic only; it has no effect on inference.
+
 ### 7.2 Model Entry Point
 
 **File:** [`models/model.py`](models/model.py)
@@ -257,6 +263,7 @@ Activated via:
 |------|--------|--------|
 | `models/embed.py` | **Modified** | Added `DataEmbedding_formula_b_sem`; baseline `DataEmbedding` kept for `pe_mode='vanilla'` |
 | `models/model.py` | **Modified** | Added `pe_mode='formula_b_sem'` branch; everything else unchanged |
+| `models/__init__.py` | Unchanged | Empty file; copied for completeness |
 | `models/attn.py` | Unchanged | Identical to baseline |
 | `models/encoder.py` | Unchanged | Identical to baseline |
 | `models/decoder.py` | Unchanged | Identical to baseline |
@@ -289,21 +296,29 @@ series for strict comparability.
 | `--features` | `M` | Multivariate → multivariate |
 | `--seq_len` | 96 | 96-step encoder context |
 | `--label_len` | 48 | 48-step decoder warm-up |
-| `--pred_len` | 24/48/96/192/336/720 | Phase 1 sweep |
+| `--pred_len` | Phase 1: 96, 192 · Phase 2: 48, 96, 192, 336 | |
 | `--e_layers` | 2 | Encoder layers |
 | `--d_layers` | 1 | Decoder layers |
 | `--d_model` | 512 | Embedding dimension |
 | `--n_heads` | 8 | Attention heads |
 | `--d_ff` | 2048 | Feed-forward width |
+| `--factor` | 5 | ProbSparse factor (unused with `--attn full`) |
+| `--enc_in` | 7 | Encoder input features |
+| `--dec_in` | 7 | Decoder input features |
+| `--c_out` | 7 | Output features |
 | `--attn` | `full` | Full attention (not ProbSparse) |
 | `--embed` | `timeF` | Continuous time features via linear layer |
 | `--freq` | `h` | Hourly frequency → 4 time features |
+| `--activation` | `gelu` | |
 | `--dropout` | 0.05 | |
+| `--distil` | `True` | Framework default; not passed explicitly in scripts |
 | `--train_epochs` | 6 | |
 | `--patience` | 3 | Early stopping |
 | `--learning_rate` | 0.0001 | |
 | `--batch_size` | 32 | |
-| `--seed` | 2021 | |
+| `--itr` | 1 | |
+| `--decay_a` | 1.0 | Framework default; not passed explicitly in scripts |
+| `--seed` | Phase 1: 2021 · Phase 2: 2021, 2022, 2023 | |
 | `--pe_mode` | `formula_b_sem` | **This experiment's switch** |
 
 ---
@@ -374,7 +389,7 @@ direction of change is more salient than distance from mean).
 
 ## 14. How to Run
 
-### On Google Colab / remote GPU
+### Phase 1 — seed 2021, pred\_len ∈ {96, 192}
 
 ```bash
 bash experiments/Formula-B-sem/formula-B-sem-ph1.sh
@@ -382,10 +397,23 @@ bash experiments/Formula-B-sem/formula-B-sem-ph1.sh
 
 The script:
 1. Copies all 6 model files to `Informer2020-original/models/`
-2. Runs 6 prediction-horizon sweeps (`pred_len ∈ {24, 48, 96, 192, 336, 720}`)
+2. Runs **2** prediction-horizon sweeps (`pred_len ∈ {96, 192}`) with `seed=2021`
 3. Logs each run to `logs/Formula-B-sem-phase1/`
 4. Prints an MSE/MAE summary table at the end
 5. Is idempotent: already-completed runs are skipped automatically
+
+### Phase 2 — seeds {2021, 2022, 2023}, pred\_len ∈ {48, 96, 192, 336}
+
+```bash
+bash experiments/Formula-B-sem/formula-B-sem-ph2.sh
+```
+
+The script:
+1. Copies all 6 model files to `Informer2020-original/models/`
+2. Runs **12** sweeps (3 seeds × 4 pred\_lens)
+3. Logs each run to `logs/Formula-B-sem-phase2/`
+4. Prints a per-seed summary table at the end
+5. Is idempotent: runs already containing `mse:` in their log are skipped
 
 ### Manual single run (for debugging)
 
@@ -431,3 +459,52 @@ with torch.no_grad():
         "Global mean equals all tokens — degenerate input"
 print("Ordering non-triviality check passed.")
 ```
+
+---
+
+## 15. Experiment Results
+
+Results are recorded in
+`experiments/Formula-B-sem/Order_Forumla_B_sem.ipynb`.
+All values below are taken verbatim from the notebook output lines
+(`mse:..., mae:...`).
+
+### 15.1 Phase 1 — seed 2021, pred\_len ∈ {96, 192}
+
+Phase 1 status: Total: 2 | Completed: 2 | Failed: 0 | Skipped: 0
+
+| RUN\_ID | MSE | MAE |
+|---------|-----|-----|
+| `formula_b_sem_ph1_ETTh1_pred96_seed2021` | 0.8911137580871582 | 0.7640805244445801 |
+| `formula_b_sem_ph1_ETTh1_pred192_seed2021` | 0.9621934294700623 | 0.7902503609657288 |
+
+Reference baseline (Exp1-Pre, alpha=1.0, seed=2021):
+
+| pred\_len | Exp1-Pre MSE |
+|-----------|-------------|
+| 96 | 0.8683 |
+| 192 | 0.8463 |
+
+**Phase 1 outcome:** Formula-B-sem was worse than Exp1-Pre at both horizons
+(pred=96: 0.8911 vs 0.8683, +0.0228; pred=192: 0.9622 vs 0.8463, +0.1159).
+Applied decision rule "loses BOTH vs Exp1-Pre → document, stop"; however
+Phase 2 was executed for robustness confirmation.
+
+### 15.2 Phase 2 — seeds {2021, 2022, 2023}, pred\_len ∈ {48, 96, 192, 336}
+
+Phase 2 status: Total: 12 | Completed: 12 | Failed: 0 | Skipped: 0
+
+| Seed | pred\_len | MSE | MAE |
+|------|-----------|-----|-----|
+| 2021 | 48 | 0.9602015018463135 | 0.7683544158935547 |
+| 2021 | 96 | 0.7835373878479004 | 0.682116687297821 |
+| 2021 | 192 | 0.9376522302627563 | 0.7857064008712769 |
+| 2021 | 336 | 0.9643481969833374 | 0.7918732762336731 |
+| 2022 | 48 | 0.8936455249786377 | 0.7376778721809387 |
+| 2022 | 96 | 0.7975202798843384 | 0.6957442164421082 |
+| 2022 | 192 | 1.0187780857086182 | 0.8290572166442871 |
+| 2022 | 336 | 0.9252648949623108 | 0.7778674960136414 |
+| 2023 | 48 | 0.9553710222244263 | 0.7777656316757202 |
+| 2023 | 96 | 0.8614110946655273 | 0.7358465194702148 |
+| 2023 | 192 | 0.910224974155426 | 0.7555420398712158 |
+| 2023 | 336 | 1.0116863250732422 | 0.8093421459197998 |

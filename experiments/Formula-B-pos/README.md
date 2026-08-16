@@ -59,6 +59,12 @@ $$
 \mathrm{Ordering}_i = \frac{\Delta_i^p}{\bar{p} + \varepsilon}, \quad \varepsilon = 10^{-8}
 $$
 
+> **Note on Legendre scaling:** `LegendrePositionEmbedding` applies a
+> `1/sqrt(d_model)` scale factor to the raw Legendre polynomial values before
+> storing them in the frozen buffer (`scaling=True` by default,
+> `models/legendre_embedding.py` line 66).  This directly affects the magnitude
+> of $P_i$, $\mu_p$, $\bar{p}$, and therefore $\mathrm{Ordering}_i$.
+
 ### 4.2 What it encodes
 
 $P_i$ are Legendre polynomial evaluations — deterministic, fixed vectors that vary
@@ -167,21 +173,29 @@ output    [B, L, D]   dropout(val + temp + leg + ordering)
 | `--features` | `M` |
 | `--seq_len` | 96 |
 | `--label_len` | 48 |
-| `--pred_len` | 24/48/96/192/336/720 |
+| `--pred_len` | Phase 1: 96, 192 · Phase 2: 48, 96, 192, 336 |
 | `--e_layers` | 2 |
 | `--d_layers` | 1 |
 | `--d_model` | 512 |
 | `--n_heads` | 8 |
 | `--d_ff` | 2048 |
+| `--factor` | 5 |
+| `--enc_in` | 7 |
+| `--dec_in` | 7 |
+| `--c_out` | 7 |
 | `--attn` | `full` |
 | `--embed` | `timeF` |
 | `--freq` | `h` |
+| `--activation` | `gelu` |
 | `--dropout` | 0.05 |
+| `--distil` | `True` (framework default; not passed explicitly) |
 | `--train_epochs` | 6 |
 | `--patience` | 3 |
 | `--learning_rate` | 0.0001 |
 | `--batch_size` | 32 |
-| `--seed` | 2021 |
+| `--itr` | 1 |
+| `--decay_a` | 1.0 (framework default; not passed explicitly) |
+| `--seed` | Phase 1: 2021 · Phase 2: 2021, 2022, 2023 |
 | `--pe_mode` | `formula_b_pos` |
 
 ---
@@ -201,7 +215,7 @@ output    [B, L, D]   dropout(val + temp + leg + ordering)
 
 ## 11. How to Run
 
-### On Google Colab / remote GPU
+### Phase 1 — seed 2021, pred\_len ∈ {96, 192}
 
 ```bash
 bash experiments/Formula-B-pos/formula-B-pos-ph1.sh
@@ -209,10 +223,23 @@ bash experiments/Formula-B-pos/formula-B-pos-ph1.sh
 
 The script:
 1. Copies all 7 model files (including `legendre_embedding.py`) to `Informer2020-original/models/`
-2. Runs 6 prediction-horizon sweeps (`pred_len ∈ {24, 48, 96, 192, 336, 720}`)
+2. Runs **2** prediction-horizon sweeps (`pred_len ∈ {96, 192}`) with `seed=2021`
 3. Logs each run to `logs/Formula-B-pos-phase1/`
 4. Prints an MSE/MAE summary table at the end
 5. Is idempotent: already-completed runs are skipped automatically
+
+### Phase 2 — seeds {2021, 2022, 2023}, pred\_len ∈ {48, 96, 192, 336}
+
+```bash
+bash experiments/Formula-B-pos/formula-B-pos-ph2.sh
+```
+
+The script:
+1. Copies all 7 model files (including `legendre_embedding.py`) to `Informer2020-original/models/`
+2. Runs **12** sweeps (3 seeds × 4 pred\_lens)
+3. Logs each run to `logs/Formula-B-pos-phase2/`
+4. Prints a per-seed summary table at the end
+5. Is idempotent: runs already containing `mse:` in their log are skipped
 
 ### Manual single run
 
@@ -259,3 +286,95 @@ with torch.no_grad():
     ordering_expected = delta_p_expected / (p_bar + 1e-8)
 print("Ordering derived from P only. V not used in delta_p. ✓")
 ```
+
+---
+
+## 12. Experiment Results
+
+Results are recorded in
+`experiments/Formula-B-pos/Order_formula_b_pos (1).ipynb`.
+All values below are taken verbatim from the notebook output lines
+(`mse:..., mae:...`).
+
+### 12.1 Phase 1 — seed 2021, pred\_len ∈ {96, 192}
+
+| RUN\_ID | MSE | MAE |
+|---------|-----|-----|
+| `formula_b_pos_ph1_ETTh1_pred96_seed2021` | 0.8686856031417847 | 0.7318677306175232 |
+| `formula_b_pos_ph1_ETTh1_pred192_seed2021` | 0.9874743819236755 | 0.7753885984420776 |
+
+Reference baseline (Exp1-Pre, alpha=1.0, seed=2021):
+
+| pred\_len | Exp1-Pre MSE |
+|-----------|-------------|
+| 96 | 0.8683 |
+| 192 | 0.8463 |
+
+**Phase 1 outcome:** Formula-B-pos matched Exp1-Pre at pred=96
+(0.8687 vs 0.8683, +0.0004) but was worse at pred=192
+(0.9875 vs 0.8463, +0.1412).  Applied decision rule
+"wins ONE vs Exp1-Pre → Phase 2 to confirm"; Phase 2 was executed.
+
+### 12.2 Phase 2 — seeds {2021, 2022, 2023}, pred\_len ∈ {48, 96, 192, 336}
+
+All 12 runs completed successfully (Total: 12 | Completed: 12 | Failed: 0 | Skipped: 0).
+
+| Seed | pred\_len | MSE | MAE |
+|------|-----------|-----|-----|
+| 2021 | 48 | 0.7086886167526245 | 0.6460009217262268 |
+| 2021 | 96 | 0.9209663271903992 | 0.7743777632713318 |
+| 2021 | 192 | 1.1172220706939697 | 0.8468191027641296 |
+| 2021 | 336 | 1.1496708393096924 | 0.8536968231201172 |
+| 2022 | 48 | 0.8566449284553528 | 0.7472320199012756 |
+| 2022 | 96 | 1.020186185836792 | 0.8236838579177856 |
+| 2022 | 192 | 1.0320625305175781 | 0.8047327995300293 |
+| 2022 | 336 | 0.9520891308784485 | 0.7916182279586792 |
+| 2023 | 48 | 0.901191234588623 | 0.7550432682037354 |
+| 2023 | 96 | 0.9476919770240784 | 0.7859644293785095 |
+| 2023 | 192 | 0.8984142541885376 | 0.7349221110343933 |
+| 2023 | 336 | 1.0577560663223267 | 0.8225201964378357 |
+
+#### Diagnostic signal statistics (from training logs, step=0, encoder pass)
+
+At initialisation the embedding produces the following norm ratios
+(logged by the `[FORMULA_B_POS step=N]` diagnostic in `embed.py`):
+
+| Sequence | ordering\_norm | val\_norm (approx) | ordering/val (approx) | p\_bar (approx) |
+|----------|---------------|--------------------|-----------------------|----------------|
+| L=96 (enc) | 0.7617 | ~29–32 | ~0.024–0.027 | 0.1737 |
+| L=48 (dec, pred=48) | 0.7617 | ~16–18 | ~0.043–0.047 | 0.1737 |
+| L=144 (dec, pred=96) | 0.7660 | ~11–13 | ~0.058–0.067 | 0.1576 |
+| L=240 (dec, pred=192) | 0.7727 | ~8–9 | ~0.092–0.096 | 0.1400 |
+
+The ordering signal is consistently small relative to the value embedding
+(~2–10 % at initialisation).
+
+---
+
+## 13. Implementation Notes
+
+### 13.1 Diagnostic step counter
+
+`DataEmbedding_formula_b_pos.__init__` initialises `self._diag_step = 0`
+(`embed.py` line 188).  During training, every 100 steps the forward pass prints:
+
+```
+[FORMULA_B_POS step=N] val_norm=... | ordering_norm=... | temp_norm=... | p_bar=... | ordering/val=...
+```
+
+This is a training-time diagnostic only; it has no effect on inference.
+
+### 13.2 Legendre buffer scaling
+
+`LegendrePositionEmbedding` divides all polynomial values by `sqrt(d_model)`
+before registering the buffer (`legendre_embedding.py` line 66).  With
+`d_model=512` this factor is `≈ 0.0442`.  The raw Legendre values in `[-1, 1]`
+become `[-0.0442, 0.0442]`, which sets the scale of `p_bar ≈ 0.17` observed
+in the diagnostic logs.
+
+### 13.3 `decay_a` parameter
+
+`main_informer.py` registers `--decay_a` with `default=1.0`.  Neither Phase 1
+nor Phase 2 shell scripts pass this flag explicitly, so all runs used
+`decay_a=1.0`.  This is confirmed by `decay_a=1.0` in every `Namespace(...)`
+printout in the notebook.
